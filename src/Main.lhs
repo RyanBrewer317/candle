@@ -33,7 +33,7 @@
 >             case infer [] t2 of
 >               Left err -> putStrLn err
 >               Right _t3 -> do
->                 let bytecode = codegen [] t2 ++ [29, 0]
+>                 let bytecode = codegen [] [] t2 ++ [29, 0]
 >                 h_out <- openFile "bin.fvm" WriteMode
 >                 B.hPut h_out $ B.pack bytecode
 >                 hClose h_out
@@ -607,10 +607,11 @@
 
 > captures :: [Int] -> Int -> Term -> Set.Set Int
 > captures caps depth t = case t of
->   Lambda _ ManyMode _ _ body -> Set.map (\n->n-1) $ captures caps (depth + 1) body
+>   Lambda _ _ _ _ body -> Set.map (\n->n-1) $ captures caps (depth + 1) body
 >   Ident _ _ i _ ->
 >     if i < depth then Set.empty else Set.singleton i
 >   App _ ManyMode foo bar -> captures caps depth foo `Set.union` captures caps depth bar
+>   App _ _ foo _bar -> captures caps depth foo
 >   _ -> Set.empty
 
 > lamOp :: Int -> [Word8]
@@ -626,19 +627,21 @@
 > capOp :: Int -> [Word8]
 > capOp n = [5, fromIntegral n]
 
-> codegen :: [Int] -> Term -> [Word8]
-> codegen caps t = case t of
+> codegen :: [Int] -> [Int] -> Term -> [Word8]
+> codegen caps kcaps t = case t of
 >   Lambda _ ManyMode _ _ body -> 
 >     let body_caps = Set.toAscList $ captures [] 1 body in
 >     let body_cap_indices = map (\n->fromMaybe (-1) (elemIndex (n-1) caps) + 1) body_caps in
->     let body_ops = codegen body_caps body in
+>     let body_ops = codegen body_caps kcaps body in
 >     concatMap capOp (reverse body_cap_indices) ++ lamOp (length body_ops + 1) ++ body_ops ++ retOp
->   Lambda _ ZeroMode _ _ body -> codegen caps body
->   Ident _ _ i _ -> 
+>   Lambda _ ZeroMode _ _ body -> codegen caps kcaps body
+>   Ident _ _ i _ ->
 >     case elemIndex i caps of
 >       Just idx -> varOp (idx + 1)
 >       Nothing -> varOp 0
->   App _ ManyMode foo bar -> codegen caps foo ++ codegen caps bar ++ appOp
->   App _ ZeroMode foo _bar -> codegen caps foo
+>   App _ ManyMode foo bar -> 
+>     let bar_caps = Set.toAscList $ captures [] 0 bar in
+>     codegen caps bar_caps foo ++ codegen caps kcaps bar ++ concatMap capOp kcaps ++ appOp
+>   App _ ZeroMode foo _bar -> codegen caps kcaps foo
 >   Nat _ n -> litOp n
 >   _ -> undefined
