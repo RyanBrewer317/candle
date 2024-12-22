@@ -14,8 +14,7 @@
 > import qualified Data.Set as Set
 > import System.Process (system)
 > import Control.Monad (when)
-> import Data.Bifunctor (second)
-  
+
 > main :: IO ()
 > main = do
 >   putStr "> "
@@ -26,11 +25,11 @@
 >     case run parseTerm Nothing pos src of
 >       Left err -> putStrLn err
 >       Right (t, _, "") -> do
->         let res = translate 0 Map.empty t
+>         let res = translate 0 Map.empty [] t
 >         case res of
 >           Left err -> putStrLn err
 >           Right t2 -> do
->             case infer [] t2 of
+>             case infer Nothing [] [] t2 of
 >               Left err -> putStrLn err
 >               Right _t3 -> do
 >                 let bytecode = codegen [] [] t2 ++ [29, 0]
@@ -53,9 +52,10 @@
 
 > data Sort = TypeSort | KindSort deriving (Show, Eq)
 
-> data Syntax = LambdaSyntax Pos BinderMode String Syntax Syntax
+> data Syntax = LambdaSyntax Pos BinderMode String (Maybe Syntax) Syntax
 >             | IdentSyntax Pos String
 >             | AppSyntax Pos BinderMode Syntax Syntax
+>             | ImmediateAppSyntax Pos String [(BinderMode, String, Maybe Syntax)] Syntax Syntax
 >             | NatSyntax Pos Int
 >             | NatTypeSyntax Pos
 >             | SortSyntax Pos Sort
@@ -77,6 +77,7 @@
 >   LambdaSyntax p _ _ _ _ -> p
 >   IdentSyntax p _ -> p
 >   AppSyntax p _ _ _ -> p
+>   ImmediateAppSyntax p _ _ _ _ -> p
 >   NatSyntax p _ -> p
 >   NatTypeSyntax p -> p
 >   SortSyntax p _ -> p
@@ -92,13 +93,24 @@
 >   CastSyntax p _ _ _ -> p
 >   ExFalsoSyntax p _ -> p
 
+> prettyParams :: [(BinderMode, String, Maybe Syntax)] -> String
+> prettyParams = concatMap (\(mode, x, mb_t) -> case (mode, mb_t) of
+>     (ManyMode, Just t) -> "(" ++ x ++ ": " ++ pretty t ++ ")"
+>     (ManyMode, Nothing) -> "(" ++ x ++ ")"
+>     (_,  Just t) -> "<" ++ x ++ ": " ++ pretty t ++ ">"
+>     (_, Nothing) -> "<" ++ x ++ ">"
+>   )
+
 > instance Pretty Syntax where
 >   pretty stx = case stx of
->     LambdaSyntax _ ManyMode x t e -> "(" ++ x ++ ": " ++ pretty t ++ ")-> " ++ pretty e
->     LambdaSyntax _ _ x t e -> "<" ++ x ++ ": " ++ pretty t ++ ">-> " ++ pretty e
+>     LambdaSyntax _ ManyMode x (Just t) e -> "(" ++ x ++ ": " ++ pretty t ++ ")-> " ++ pretty e
+>     LambdaSyntax _ ManyMode x Nothing e -> "(" ++ x ++ ")-> " ++ pretty e
+>     LambdaSyntax _ _ x (Just t) e -> "<" ++ x ++ ": " ++ pretty t ++ ">-> " ++ pretty e
+>     LambdaSyntax _ _ x Nothing e -> "<" ++ x ++ ">-> " ++ pretty e
 >     IdentSyntax _ s -> s
 >     AppSyntax _ ManyMode f a -> "(" ++ pretty f ++ ")(" ++ pretty a ++ ")"
 >     AppSyntax _ _ f a -> "(" ++ pretty f ++ ")<" ++ pretty a ++ ">"
+>     ImmediateAppSyntax _ x params v e -> "let " ++ x ++ prettyParams params ++ " = " ++ pretty v ++ " in " ++ pretty e
 >     NatSyntax _ n -> show n
 >     NatTypeSyntax _ -> "Nat"
 >     SortSyntax _ TypeSort -> "Type"
@@ -116,8 +128,8 @@
 >     CastSyntax _ a b eq -> "cast(" ++ pretty a ++ ", " ++ pretty b ++ ", " ++ pretty eq ++ ", " ++ ")"
 >     ExFalsoSyntax _ a -> "exfalso(" ++ pretty a ++ ")"
 
-> data Term = Lambda Pos BinderMode String Term Term
->           | Ident Pos Sort Int String
+> data Term = Lambda Pos BinderMode String (Maybe Term) Term
+>           | Ident Pos BinderMode Sort Int String
 >           | App Pos BinderMode Term Term
 >           | Nat Pos Int
 >           | NatType Pos
@@ -137,9 +149,11 @@
 
 > instance Pretty Term where
 >   pretty t = case t of
->     Lambda _ ManyMode x ty e -> "(" ++ x ++ ": " ++ pretty ty ++ ")-> " ++ pretty e
->     Lambda _ _ x ty e -> "<" ++ x ++ ": " ++ pretty ty ++ ">-> " ++ pretty e
->     Ident _ _ _ x -> x
+>     Lambda _ ManyMode x (Just ty) e -> "(" ++ x ++ ": " ++ pretty ty ++ ")-> " ++ pretty e
+>     Lambda _ ManyMode x Nothing e -> "(" ++ x ++ ")-> " ++ pretty e
+>     Lambda _ _ x (Just ty) e -> "<" ++ x ++ ": " ++ pretty ty ++ ">-> " ++ pretty e
+>     Lambda _ _ x Nothing e -> "<" ++ x ++ ">-> " ++ pretty e
+>     Ident _ _ _ _ x -> x
 >     App _ ManyMode foo bar -> "(" ++ pretty foo ++ ")(" ++ pretty bar ++ ")"
 >     App _ _ foo bar -> "(" ++ pretty foo ++ ")<" ++ pretty bar ++ ">"
 >     Nat _ n -> show n
@@ -280,38 +294,39 @@
 >   _ <- whitespace -- TODO: should be not(oneOf[satisfy isAlpha, satisfy isDigit, char '_'])
 >   i <- patternString
 >   _ <- whitespace0
->   (ident, let_type, params, t) <- do
+>   (ident, let_type, params, mb_t) <- do
 >     mb_params <- possible parseParams
 >     _ <- whitespace0
->     _ <- char ':'
->     t <- parseTerm
+>     res <- possible $ char ':'
+>     mb_t <- case res of
+>       Just _ -> Just <$> parseTerm
+>       Nothing -> return Nothing
 >     case mb_params of
 >       Just params -> do
 >         _ <- char '='
->         return (i, Basic, params, t)
+>         return (i, Basic, params, mb_t)
 >       Nothing -> do
 >         op <- oneOf [exact "=", exact "<-"]
 >         case op of
->           "=" -> return (i, Basic, [], t)
->           "<-" -> return (i, Back, [], t)
+>           "=" -> return (i, Basic, [], mb_t)
+>           "<-" -> return (i, Back, [], mb_t)
 >           _ -> error "internal error"
 >   val <- parseTerm
 >   _ <- exact "in"
 >   _ <- whitespace -- TODO: should be not(oneOf[satisfy isAlpha, satisfy isDigit, char '_'])
 >   scope <- parseTerm
->   let val2 = buildLambda p params t val
 >   return $ case let_type of
->     Basic -> AppSyntax p ManyMode (LambdaSyntax p ManyMode ident (buildPi p params t) scope) val2
->     Back -> AppSyntax p ManyMode val (LambdaSyntax p ManyMode ident t scope)
+>     Basic -> ImmediateAppSyntax p ident params val scope
+>     Back -> AppSyntax p ManyMode val (LambdaSyntax p ManyMode ident mb_t scope)
 
 > buildPi :: Pos -> [(BinderMode, String, Syntax)] -> Syntax -> Syntax
 > buildPi _p [] t = t
 > buildPi p [(binder_mode, x, xt)] rett = PiSyntax p binder_mode x xt rett
 > buildPi p ((binder_mode, x, xt):xs) rett = PiSyntax p binder_mode x xt (buildPi p xs rett)
 
-> buildLambda :: Pos -> [(BinderMode, String, Syntax)] -> Syntax -> Syntax -> Syntax
-> buildLambda _p [] _t e = e
-> buildLambda p ((binder_mode, x, xt):xs) rett e = LambdaSyntax p binder_mode x xt (buildLambda p xs rett e)
+> buildLambda :: Pos -> [(BinderMode, String, Maybe Syntax)] -> Syntax -> Syntax
+> buildLambda _p [] e = e
+> buildLambda p ((binder_mode, x, xt):xs) e = LambdaSyntax p binder_mode x xt (buildLambda p xs e)
 
 > parseParens :: Parser Syntax
 > parseParens = do
@@ -333,13 +348,17 @@
 >           right <- parseTerm
 >           case next of
 >             "&" -> return $ IntersectionTypeSyntax p x t right
->             "->" -> return $ LambdaSyntax p ManyMode x t right
+>             "->" -> return $ LambdaSyntax p ManyMode x (Just t) right
 >             "=>" -> return $ PiSyntax p ManyMode x t right
 >             _ -> error "internal error"
 >         Nothing -> do
 >           _ <- whitespace0
 >           _ <- char ')'
->           return $ IdentSyntax p x
+>           _ <- whitespace0
+>           res3 <- possible $ exact "->"
+>           case res3 of
+>             Just _ -> LambdaSyntax p ManyMode x Nothing <$> parseTerm
+>             Nothing -> return $ IdentSyntax p x
 >     Nothing -> do
 >       t <- parseTerm
 >       _ <- char ')'
@@ -380,7 +399,7 @@
 >   res <- oneOf [exact "->", exact "=>"]
 >   right <- parseTerm
 >   case res of
->     "->" -> return $ LambdaSyntax p ZeroMode x t right
+>     "->" -> return $ LambdaSyntax p ZeroMode x (Just t) right
 >     "=>" -> return $ PiSyntax p ZeroMode x t right
 >     _ -> error "internal error"
 
@@ -451,21 +470,28 @@
 >   _ <- whitespace0
 >   return out
 
-> parseParams :: Parser [(BinderMode, String, Syntax)]
+> parseParams :: Parser [(BinderMode, String, Maybe Syntax)]
 > parseParams = many $ do
 >     res <- oneOf [char '(', char '<']
 >     _ <- whitespace0
 >     param <- patternString
 >     _ <- whitespace0
->     _ <- char ':'
->     t <- parseTerm
->     case res of
->       '(' -> do
+>     res2 <- possible $ char ':'
+>     case (res, res2) of
+>       ('(', Just _) -> do
+>         t <- parseTerm
 >         _ <- char ')'
->         return (ManyMode, param, t)
->       '<' -> do
+>         return (ManyMode, param, Just t)
+>       ('<', Just _) -> do
+>         t <- parseTerm
 >         _ <- char '>'
->         return (ZeroMode, param, t)
+>         return (ZeroMode, param, Just t)
+>       ('(', Nothing) -> do
+>         _ <- char ')'
+>         return (ManyMode, param, Nothing)
+>       ('<', Nothing) -> do
+>         _ <- char '>'
+>         return (ZeroMode, param, Nothing)
 >       _ -> error "internal error"
 
 > parseDecl :: Parser (Either (String, (Syntax, Syntax)) [String])
@@ -488,7 +514,7 @@
 >       t <- parseTerm
 >       _ <- char '='
 >       body <- parseTerm
->       let body2 = buildLambda p params t body
+>       let body2 = buildLambda p params body
 >       return $ Left (name, (t, body2))
 
 > parseFile :: Parser (Map.Map String (Syntax, Syntax), [[String]])
@@ -498,46 +524,59 @@
 >   (decls, imports) <- fmap partitionEithers parser
 >   return (Map.fromList decls, imports)
 
-> sortOf :: Map.Map String (Int, Sort) -> Syntax -> Sort
-> sortOf renames (IdentSyntax _ s) = case Map.lookup s renames of
->   Just (_, sort) -> sort
+> sortOf :: Map.Map String (Int, BinderMode, Sort) -> Term -> Sort
+> sortOf renames (Ident _ _ _ _ s) = case Map.lookup s renames of
+>   Just (_, _, sort) -> sort
 >   Nothing -> error "internal error"
-> sortOf renames (PiSyntax _ _ _ _ body) = sortOf renames body
-> sortOf _renames (NatTypeSyntax _) = TypeSort
-> sortOf _renames (SortSyntax _ _) = KindSort
+> sortOf renames (Pi _ _ _ _ body) = sortOf renames body
+> sortOf _renames (NatType _) = TypeSort
+> sortOf _renames (Sort _ _) = KindSort
 > sortOf _renames _term = error "internal error"
 
-> translate :: Int -> Map.Map String (Int, Sort) -> Syntax -> Either String Term
-> translate index renames t =
+> translate :: Int -> Map.Map String (Int, BinderMode, Sort) -> [Term] -> Syntax -> Either String Term
+> translate index renames psi t =
 >   let tr = translate in
 >   case t of
->     LambdaSyntax p binder_mode param ty body -> do
->       ty2 <- tr index renames ty
->       body2 <- tr (index + 1) (Map.insert param (index, sortOf renames ty) renames) body
->       return $ Lambda p binder_mode param ty2 body2
->     IdentSyntax p ('#':name) -> return $ Ident p TypeSort 0 $ '#':name
+>     LambdaSyntax p binder_mode param mb_ty body ->
+>       case mb_ty of
+>         Just ty -> do
+>           ty2 <- tr index renames [] ty
+>           body2 <- tr (index + 1) (Map.insert param (index, binder_mode, sortOf renames ty2) renames) (tail psi) body
+>           return $ Lambda p binder_mode param (Just ty2) body2
+>         Nothing -> 
+>           case psi of
+>             arg:rest -> do
+>               body2 <- tr (index + 1) (Map.insert param (index, binder_mode, sortOf renames arg) renames) rest body
+>               return $ Lambda p binder_mode param Nothing body2
+>             [] -> Left $ "Type error. This lambda needs a type annotation (" ++ show p ++ ")"
+>     IdentSyntax p ('#':name) -> return $ Ident p ManyMode TypeSort 0 $ '#':name
 >     IdentSyntax p name ->
 >       case Map.lookup name renames of
->         Just (i, sort) -> return $ Ident p sort (index - i - 1) name
+>         Just (i, bm, sort) -> return $ Ident p bm sort (index - i - 1) name
 >         Nothing -> Left $ prettyParseError p Nothing $ "undefined variable `" ++ name ++ "`"
->     AppSyntax p binder_mode foo bar -> do
->       foo2 <- tr index renames foo
->       bar2 <- tr index renames bar
->       return $ App p binder_mode foo2 bar2
+>     AppSyntax p bm foo bar -> do
+>       bar2 <- tr index renames [] bar
+>       foo2 <- tr index renames (bar2:psi) foo
+>       return $ App p bm foo2 bar2
+>     ImmediateAppSyntax p x params v e -> do
+>       v2 <- tr index renames [] (buildLambda p params v)
+>       let binder_mode = getBinderMode v2
+>       e2 <- tr (index + 1) (Map.insert x (index, binder_mode, sortOf renames v2) renames) psi e
+>       return $ App p binder_mode (Lambda p binder_mode x Nothing e2) v2
 >     NatSyntax p n -> return $ Nat p n
 >     NatTypeSyntax p -> return $ NatType p
 >     SortSyntax p s -> return $ Sort p s
 >     PiSyntax p binder_mode param ty body -> do
->       ty2 <- tr index renames ty
->       body2 <- tr (index + 1) (Map.insert param (index, sortOf renames ty) renames) body
+>       ty2 <- tr index renames [] ty
+>       body2 <- tr (index + 1) (Map.insert param (index, binder_mode, sortOf renames ty2) renames) psi body
 >       return $ Pi p binder_mode param ty2 body2
 >     _ -> undefined
 
 > shift :: Int -> Term -> Term
 > shift n term = case term of
->   Ident p s i str | i >= n -> Ident p s (i + 1) str
+>   Ident p bm s i str | i >= n -> Ident p bm s (i + 1) str
 >   Pi p mode x xt body -> Pi p mode x (shift n xt) (shift (n+1) body)
->   Lambda p mode x xt body -> Lambda p mode x (shift n xt) (shift (n+1) body)
+>   Lambda p mode x xt body -> Lambda p mode x (shift n <$> xt) (shift (n+1) body)
 >   IntersectionType p x xt body -> IntersectionType p x (shift n xt) (shift (n+1) body)
 >   App p mode foo bar -> App p mode (shift n foo) (shift n bar)
 >   J p a b c d e -> J p (shift n a) (shift n b) (shift n c) (shift n d) (shift n e)
@@ -553,7 +592,7 @@
 
 > subst :: Term -> Int -> Term -> Term
 > subst term depth new = case term of
->   Ident _ _ i _ -> if depth == i then new else term
+>   Ident _ _ _ i _ -> if depth == i then new else term
 >   Pi p mode x xt body -> Pi p mode x (subst xt depth new) (subst body (depth + 1) (shift 0 new))
 >   Lambda p mode x xt body -> Lambda p mode x xt (subst body (depth + 1) (shift 0 new))
 >   IntersectionType p x xt body -> IntersectionType p x xt (subst body (depth + 1) (shift 0 new))
@@ -569,46 +608,73 @@
 >   ExFalso p a -> ExFalso p (subst a depth new)
 >   _ -> term
 
-> typeEq :: Term -> Term -> Bool
-> typeEq a b = case (a, b) of
->   (Ident _ _ i _, Ident _ _ j _) -> i == j
+> typeEq :: [(BinderMode, Term, Maybe Term)] -> Term -> Term -> Bool
+> typeEq gamma a b = case (eval gamma a, eval gamma b) of
+>   (Ident _ _ _ i _, Ident _ _ _ j _) -> i == j
 >   (NatType _, NatType _) -> True
 >   (Sort _ s1, Sort _ s2) -> s1 == s2
->   (Pi _ mode1 _ xt body1, Pi _ mode2 _ yt body2) -> mode1 == mode2 && typeEq xt yt && typeEq body1 body2
+>   (Pi _ mode1 _ xt body1, Pi _ mode2 _ yt body2) -> mode1 == mode2 && typeEq gamma xt yt && typeEq ((ManyMode,body1,Nothing):gamma) body1 body2
 >   _ -> False
 
-> infer :: [(BinderMode, Term)] -> Term -> Either String Term
-> infer gamma term = case term of
->   Lambda p mode x xt body -> do
->     _ <- infer gamma xt
->     let gamma2 = (mode, shift 0 xt):gamma
->     body_t <- infer gamma2 body
+> idx :: [a] -> Int -> Maybe a
+> idx xs i = case xs of
+>   [] -> Nothing
+>   (x:rest) -> if i == 0 then Just x else idx rest (i - 1)
+
+> eval :: [(BinderMode, Term, Maybe Term)] -> Term -> Term
+> eval gamma term = case term of
+>   Ident _ _ _ i _ -> case gamma `idx` i of
+>     Just (_, _, Just v) -> eval gamma v
+>     _ -> term
+>   App _ _ foo bar -> case eval gamma foo of
+>     Lambda p mode _ _ body -> eval ((mode, NatType p, Just bar):gamma) body -- NatType p as a dummy type, since eval doesn't depend on types
+>     _ -> term
+>   _ -> term
+
+> getBinderMode :: Term -> BinderMode
+> getBinderMode ty = case ty of
+>   Pi _ _ _ _ body -> getBinderMode body
+>   Lambda _ _ _ _ body -> getBinderMode body
+>   Ident _p bm _ _i _n -> bm
+>   App _ _ foo _ -> getBinderMode foo
+>   Nat _ _ -> ManyMode
+>   NatType _ -> TypeMode
+>   Sort _ _ -> TypeMode
+>   t -> error $ "getBinderMode: " ++ show t
+
+> infer :: Maybe Term -> [(BinderMode, Term, Maybe Term)] -> [Term] -> Term -> Either String Term
+> infer arg gamma psi term = case term of
+>   Lambda p mode x mb_xt body -> do
+>     let xt = fromMaybe (head psi) mb_xt
+>     _ <- infer Nothing gamma [] xt
+>     let gamma2 = (mode, shift 0 xt, arg):gamma
+>     body_t <- infer Nothing gamma2 (tail psi) body
 >     return $ Pi p mode x xt body_t
 >   App _ mode foo bar -> do
->     foo_t <- infer gamma foo
+>     bar_t <- infer Nothing gamma [] bar
+>     foo_t <- infer (Just bar) gamma (bar_t:psi) foo
 >     case foo_t of
 >       Pi _ mode2 _ xt body_t ->
 >         if mode == mode2 then do
->           bar_t <- infer gamma bar
->           if typeEq xt bar_t then
+>           if typeEq gamma xt bar_t then
 >               return $ subst body_t 0 bar
 >           else Left $ "type mismatch, expected " ++ pretty xt ++ ", got " ++ pretty bar_t
 >         else Left $ "mode mismatch, expected " ++ show mode2 ++ ", got " ++ show mode
 >       _ -> Left $ "expected function, got " ++ pretty foo_t
 >   Pi p mode _ xt body -> do
->     _ <- infer gamma xt
->     _ <- infer ((mode, xt):map (second $ shift 0) gamma) body
+>     _ <- infer Nothing gamma [] xt
+>     _ <- infer arg ((mode, xt, arg):map (\(a,b,c)->(a,shift 0 b,c)) gamma) [] body
 >     return $ Sort p TypeSort -- TODO: should be sortOf body_t
 >   NatType p -> return $ Sort p TypeSort
 >   Sort p _ -> return $ Sort p KindSort
 >   Nat p _ -> return $ NatType p
->   Ident _ _ i _ -> let (_, t) = gamma !! i in return t
+>   Ident _ _ _ i _ -> let (_, t, _) = gamma !! i in return t
 >   _ -> undefined
 
 > captures :: [Int] -> Int -> Term -> Set.Set Int
 > captures caps depth t = case t of
 >   Lambda _ _ _ _ body -> Set.map (\n->n-1) $ captures caps (depth + 1) body
->   Ident _ _ i _ ->
+>   Ident _ _ _ i _ ->
 >     if i < depth then Set.empty else Set.singleton i
 >   App _ ManyMode foo bar -> captures caps depth foo `Set.union` captures caps depth bar
 >   App _ _ foo _bar -> captures caps depth foo
@@ -635,9 +701,9 @@
 >     let body_ops = codegen body_caps kcaps body in
 >     concatMap capOp (reverse body_cap_indices) ++ lamOp (length body_ops + 1) ++ body_ops ++ retOp
 >   Lambda _ ZeroMode _ _ body -> codegen caps kcaps body
->   Ident _ _ i _ ->
+>   Ident _ _ _ i _ ->
 >     case elemIndex i caps of
->       Just idx -> varOp (idx + 1)
+>       Just index -> varOp (index + 1)
 >       Nothing -> varOp 0
 >   App _ ManyMode foo bar -> 
 >     let bar_caps = Set.toAscList $ captures [] 0 bar in
