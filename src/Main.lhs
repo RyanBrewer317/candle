@@ -403,6 +403,36 @@
 >     "=>" -> return $ PiSyntax p ZeroMode x t right
 >     _ -> error "internal error"
 
+> parseJ :: Parser Syntax
+> parseJ = do
+>   p <- position
+>   _ <- exact "J" -- TODO: ensure no valid identifier characters immediately following
+>   _ <- whitespace0
+>   _ <- char '('
+>   eq <- parseTerm
+>   _ <- char ','
+>   a <- parseTerm
+>   _ <- char ','
+>   b <- parseTerm
+>   _ <- char ';'
+>   t <- parseTerm
+>   _ <- char ','
+>   predicate <- parseTerm
+>   _ <- char ')'
+>   return $ JSyntax p eq a b t predicate
+
+> parseRefl :: Parser Syntax
+> parseRefl = do
+>   p <- position
+>   _ <- exact "refl" -- TODO: ensure no valid identifier characters immediately following
+>   _ <- whitespace0
+>   _ <- char '('
+>   x <- parseTerm
+>   _ <- char ','
+>   t <- parseTerm
+>   _ <- char ')'
+>   return $ ReflSyntax p x t
+
 > parseTermNoPostfix :: Parser Syntax
 > parseTermNoPostfix = do
 >   _ <- whitespace0
@@ -414,6 +444,8 @@
 >     , parseNatType
 >     , parseTypeSort
 >     , parseKindSort
+>     , parseJ
+>     , parseRefl
 >     , parseIdent
 >     ]
 >   _ <- whitespace0
@@ -422,7 +454,8 @@
 > data Postfix = AppPostfix Pos Syntax
 >              | ErasedAppPostfix Pos Syntax
 > --           | MonoidPostfix Pos [Syntax]
->              | ApostrophePrefix Pos Syntax
+>              | ApostrophePostfix Pos Syntax
+>              | EqTypePostfix Pos Syntax Syntax
 
 > parseTerm :: Parser Syntax
 > parseTerm = do
@@ -450,7 +483,15 @@
 >     , do
 >       p2 <- position
 >       _ <- char '\''
->       ApostrophePrefix p2 <$> parseTerm
+>       ApostrophePostfix p2 <$> parseTerm
+>     , do
+>       p2 <- position
+>       _ <- char '='
+>       _ <- whitespace0
+>       _ <- char '['
+>       ty <- parseTerm
+>       _ <- char ']'
+>       flip (EqTypePostfix p2) ty <$> parseTerm
 >     ]
 >   let out = case args of
 >         [] -> t
@@ -465,7 +506,8 @@
 >                         term)
 >                     so_far
 >                 ) (AccessSyntax (stxPos b) b "Empty") terms -}
->             ApostrophePrefix p2 rhs -> AppSyntax p2 ManyMode b rhs
+>             ApostrophePostfix p2 rhs -> AppSyntax p2 ManyMode b rhs
+>             EqTypePostfix p2 rhs ty -> EqSyntax p2 b rhs ty
 >           ) t args
 >   _ <- whitespace0
 >   return out
@@ -570,6 +612,22 @@
 >       ty2 <- tr index renames [] ty
 >       body2 <- tr (index + 1) (Map.insert param (index, binder_mode, sortOf renames ty2) renames) psi body
 >       return $ Pi p binder_mode param ty2 body2
+>     JSyntax p eq a b c predicate -> do
+>       eq2 <- tr index renames [] eq
+>       a2 <- tr index renames [] a
+>       b2 <- tr index renames [] b
+>       c2 <- tr index renames [] c
+>       predicate2 <- tr index renames [] predicate
+>       return $ J p eq2 a2 b2 c2 predicate2
+>     EqSyntax p a b ty -> do
+>       a2 <- tr index renames [] a
+>       b2 <- tr index renames [] b
+>       ty2 <- tr index renames [] ty
+>       return $ Eq p a2 b2 ty2
+>     ReflSyntax p x ty -> do
+>       x2 <- tr index renames [] x
+>       ty2 <- tr index renames [] ty
+>       return $ Refl p x2 ty2
 >     _ -> undefined
 
 > shift :: Int -> Term -> Term
@@ -608,12 +666,22 @@
 >   ExFalso p a -> ExFalso p (subst a depth new)
 >   _ -> term
 
-> typeEq :: [(BinderMode, Term, Maybe Term)] -> Term -> Term -> Bool
-> typeEq gamma a b = case (eval gamma a, eval gamma b) of
+> identity :: Pos -> Term
+> identity p = Lambda p ManyMode "x" Nothing $ Ident p ManyMode TypeSort 0 "x"
+
+> termEq :: [(BinderMode, Term, Maybe Term)] -> Term -> Term -> Bool
+> termEq gamma a b = case (eval gamma a, eval gamma b) of
 >   (Ident _ _ _ i _, Ident _ _ _ j _) -> i == j
 >   (NatType _, NatType _) -> True
 >   (Sort _ s1, Sort _ s2) -> s1 == s2
->   (Pi _ mode1 _ xt body1, Pi _ mode2 _ yt body2) -> mode1 == mode2 && typeEq gamma xt yt && typeEq ((ManyMode,body1,Nothing):gamma) body1 body2
+>   (Pi _ mode1 _ xt body1, Pi _ mode2 _ yt body2) -> mode1 == mode2 && termEq gamma xt yt && termEq ((mode1,xt,Nothing):gamma) body1 body2
+>   (Lambda _ mode1 _ _xt body1, Lambda _ mode2 _ _yt body2) -> mode1 == mode2 && termEq ((mode1,body1,Nothing):gamma) body1 body2 -- using body1 as a dummy type because it won't matter
+>   (App _ _ foo1 bar1, App _ _ foo2 bar2) -> termEq gamma foo1 foo2 && termEq gamma bar1 bar2
+>   (Nat _ n, Nat _ m) -> n == m
+>   (J p _ _ _ _ _, t) -> termEq gamma t $ identity p
+>   (t, J p _ _ _ _ _) -> termEq gamma t $ identity p
+>   (Refl p _ _, t) -> termEq gamma t $ identity p
+>   (t, Refl p _ _) -> termEq gamma t $ identity p
 >   _ -> False
 
 > idx :: [a] -> Int -> Maybe a
@@ -656,7 +724,7 @@
 >     case foo_t of
 >       Pi _ mode2 _ xt body_t ->
 >         if mode == mode2 then do
->           if typeEq gamma xt bar_t then
+>           if termEq gamma xt bar_t then
 >               return $ subst body_t 0 bar
 >           else Left $ "type mismatch, expected " ++ pretty xt ++ ", got " ++ pretty bar_t
 >         else Left $ "mode mismatch, expected " ++ show mode2 ++ ", got " ++ show mode
@@ -669,6 +737,33 @@
 >   Sort p _ -> return $ Sort p KindSort
 >   Nat p _ -> return $ NatType p
 >   Ident _ _ _ i _ -> let (_, t, _) = gamma !! i in return t
+>   J p eq a b c predicate -> do
+>     eq_t <- infer Nothing gamma [] eq
+>     a_t <- infer Nothing gamma [] a
+>     b_t <- infer Nothing gamma [] b
+>     if termEq gamma a_t b_t then
+>       case eq_t of
+>         Eq _ l r t | termEq gamma a l && termEq gamma b r && termEq gamma a_t t -> do
+>           if termEq gamma c t then do
+>             pred_t <- infer Nothing gamma [] predicate
+>             case pred_t of
+>               Pi _ ZeroMode var_name param_t (Pi _ ZeroMode _var2_name (Eq _ l2 r2 t2) (Sort _ TypeSort)) | termEq gamma param_t t && termEq gamma a l2 && termEq gamma (Ident p ZeroMode TypeSort 0 var_name) r2 && termEq gamma t t2-> do
+>                 return $ Pi p ManyMode "_" (App p ZeroMode (App p ZeroMode predicate a) (Refl p a t)) (App p ZeroMode (App p ZeroMode predicate b) eq)
+>               _ -> Left $ "type error, the predicate of J has an invalid type (`" ++ pretty pred_t ++ "`)"   
+>           else Left $ "type error, the fourth argument of J must be the type of the first two arguments (`" ++ pretty t ++ "` != `" ++ pretty c ++ "`)"
+>         _ -> Left $ "type error, the first three arguments of J don't form a valid equation (`" ++ pretty eq_t ++ "`, `" ++ pretty a_t ++ "`, `" ++ pretty b_t ++ "`)"
+>     else Left $ "type mismatch, J equatees must have the same type (`" ++ pretty a_t ++ "` and `" ++ pretty b_t ++ "` are not equal)"
+>   Eq p l r t -> do
+>     l_t <- infer Nothing gamma [] l
+>     r_t <- infer Nothing gamma [] r
+>     if termEq gamma l_t r_t && termEq gamma l_t t then
+>       return $ Sort p TypeSort
+>     else Left $ "type mismatch, Eq equatees must have the same type (`" ++ pretty l_t ++ "` and `" ++ pretty r_t ++ "` should convert to `" ++ pretty t ++ "`)"
+>   Refl p a t -> do
+>     a_t <- infer Nothing gamma [] a
+>     if termEq gamma a_t t then
+>       return $ Eq p a a t
+>     else Left $ "type mismatch, Refl first argument must have second argument as type (`" ++ pretty a_t ++ "` != `" ++ pretty t ++ "`)"
 >   _ -> undefined
 
 > captures :: [Int] -> Int -> Term -> Set.Set Int
@@ -710,4 +805,6 @@
 >     codegen caps bar_caps foo ++ codegen caps kcaps bar ++ concatMap capOp kcaps ++ appOp
 >   App _ ZeroMode foo _bar -> codegen caps kcaps foo
 >   Nat _ n -> litOp n
+>   J {} -> lamOp 3 ++ varOp 0 ++ retOp -- J compiles to the unerased identity function
+>   Refl {} -> lamOp 3 ++ varOp 0 ++ retOp -- Refl compiles to the unerased identity function
 >   _ -> undefined
