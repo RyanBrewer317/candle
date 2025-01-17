@@ -10,7 +10,7 @@
 > import System.IO (stdout, IOMode(WriteMode), openFile)
 > import qualified Data.ByteString as B
 > import Data.Word (Word8)
-> import Data.Maybe (fromMaybe)
+> import Data.Maybe (fromMaybe, fromJust)
 > import qualified Data.Set as Set
 > import System.Process (system)
 > import Control.Monad (when)
@@ -392,15 +392,17 @@
 >   _ <- whitespace0
 >   x <- patternString
 >   _ <- whitespace0
->   _ <- char ':'
->   t <- parseTerm
+>   res <- possible $ char ':'
+>   t <- case res of
+>     Just _ -> Just <$> parseTerm
+>     Nothing -> return Nothing
 >   _ <- char '>'
 >   _ <- whitespace0
->   res <- oneOf [exact "->", exact "=>"]
+>   res2 <- oneOf [exact "->", exact "=>"]
 >   right <- parseTerm
->   case res of
->     "->" -> return $ LambdaSyntax p ZeroMode x (Just t) right
->     "=>" -> return $ PiSyntax p ZeroMode x t right
+>   case res2 of
+>     "->" -> return $ LambdaSyntax p ZeroMode x t right
+>     "=>" -> return $ PiSyntax p ZeroMode x (fromJust t) right
 >     _ -> error "internal error"
 
 > parseJ :: Parser Syntax
@@ -456,11 +458,12 @@
 > --           | MonoidPostfix Pos [Syntax]
 >              | ApostrophePostfix Pos Syntax
 >              | EqTypePostfix Pos Syntax Syntax
+>              | FuncTypePostfix Pos Syntax
 
 > parseTerm :: Parser Syntax
 > parseTerm = do
 >   t <- parseTermNoPostfix
->   args <- many0 $ oneOf
+>   args <- many0 $ whitespace0 *> oneOf
 >     [ do
 >       p2 <- position
 >       _ <- char '('
@@ -492,6 +495,11 @@
 >       ty <- parseTerm
 >       _ <- char ']'
 >       flip (EqTypePostfix p2) ty <$> parseTerm
+>     , do
+>       p2 <- position
+>       _ <- exact "=>"
+>       _ <- whitespace0
+>       FuncTypePostfix p2 <$> parseTerm
 >     ]
 >   let out = case args of
 >         [] -> t
@@ -508,6 +516,7 @@
 >                 ) (AccessSyntax (stxPos b) b "Empty") terms -}
 >             ApostrophePostfix p2 rhs -> AppSyntax p2 ManyMode b rhs
 >             EqTypePostfix p2 rhs ty -> EqSyntax p2 b rhs ty
+>             FuncTypePostfix p2 rhs -> PiSyntax p2 ManyMode "_" b rhs
 >           ) t args
 >   _ <- whitespace0
 >   return out
