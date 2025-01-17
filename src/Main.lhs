@@ -48,7 +48,7 @@
 > class Pretty a where
 >   pretty :: a -> String
 
-> data BinderMode = ZeroMode | ManyMode | TypeMode deriving (Show, Eq)
+> data BinderMode = ZeroMode | ManyMode deriving (Show, Eq)
 
 > data Sort = TypeSort | KindSort deriving (Show, Eq)
 
@@ -62,7 +62,7 @@
 >             | PiSyntax Pos BinderMode String Syntax Syntax
 >             | JSyntax Pos Syntax Syntax Syntax Syntax Syntax
 >             | IntersectionTypeSyntax Pos String Syntax Syntax
->             | IntersectionSyntax Pos Syntax Syntax Syntax
+>             | IntersectionSyntax Pos Syntax Syntax String Syntax Syntax
 >             | FstSyntax Pos Syntax
 >             | SndSyntax Pos Syntax
 >             | EqSyntax Pos Syntax Syntax Syntax
@@ -84,7 +84,7 @@
 >   PiSyntax p _ _ _ _ -> p
 >   JSyntax p _ _ _ _ _ -> p
 >   IntersectionTypeSyntax p _ _ _ -> p
->   IntersectionSyntax p _ _ _ -> p
+>   IntersectionSyntax p _ _ _ _ _ -> p
 >   FstSyntax p _ -> p
 >   SndSyntax p _ -> p
 >   EqSyntax p _ _ _ -> p
@@ -119,7 +119,7 @@
 >     PiSyntax _ _ x t e -> "<" ++ x ++ ": " ++ pretty t ++ ">=> " ++ pretty e
 >     JSyntax _ a b c d e -> "J(" ++ pretty a ++ ", " ++ pretty b ++ ", " ++ pretty c ++ ", " ++ pretty d ++ ", " ++ pretty e ++ ")"
 >     IntersectionTypeSyntax _ x t e -> "(" ++ x ++ ": " ++ pretty t ++ ")&" ++ pretty e
->     IntersectionSyntax _ a b t -> "[" ++ pretty a ++ ", " ++ pretty b ++ "; " ++ pretty t ++ "]"
+>     IntersectionSyntax p a b x xt r -> "[" ++ pretty a ++ ", " ++ pretty b ++ "; " ++ pretty (IntersectionTypeSyntax p x xt r) ++ "]"
 >     FstSyntax _ a -> ".1(" ++ pretty a ++ ")"
 >     SndSyntax _ a -> ".2(" ++ pretty a ++ ")"
 >     EqSyntax _ a b t -> "(" ++ pretty a ++ ") =" ++ pretty t ++ "= (" ++ pretty b ++ ")"
@@ -137,7 +137,7 @@
 >           | Pi Pos BinderMode String Term Term
 >           | J Pos Term Term Term Term Term
 >           | IntersectionType Pos String Term Term
->           | Intersection Pos Term Term Term
+>           | Intersection Pos Term Term String Term Term
 >           | Fst Pos Term
 >           | Snd Pos Term
 >           | Eq Pos Term Term Term
@@ -164,7 +164,7 @@
 >     Pi _ _ x ty e -> "<" ++ x ++ ": " ++ pretty ty ++ ">=> " ++ pretty e
 >     J _ a b c d e -> "J(" ++ pretty a ++ ", " ++ pretty b ++ ", " ++ pretty c ++ ", " ++ pretty d ++ ", " ++ pretty e ++ ")"
 >     IntersectionType _ x ty e -> "(" ++ x ++ ": " ++ pretty ty ++ ")&" ++ pretty e
->     Intersection _ a b ty -> "[" ++ pretty a ++ ", " ++ pretty b ++ "; " ++ pretty ty ++ "]"
+>     Intersection p a b x xt r -> "[" ++ pretty a ++ ", " ++ pretty b ++ "; " ++ pretty (IntersectionType p x xt r) ++ "]"
 >     Fst _ a -> ".1(" ++ pretty a ++ ")"
 >     Snd _ a -> ".2(" ++ pretty a ++ ")"
 >     Eq _ a b ty -> "(" ++ pretty a ++ ") =" ++ pretty ty ++ "= (" ++ pretty b ++ ")"
@@ -216,6 +216,9 @@
 >   pa >>= f = Parser $ \expected pos s -> do
 >     (a, pos2, rest) <- run pa expected pos s
 >     run (f a) expected pos2 rest
+
+> instance MonadFail Parser where
+>   fail e = Parser $ \expected pos _s -> Left $ prettyParseError pos expected e
 
 > char :: Char -> Parser Char
 > char c = satisfy (==c)
@@ -435,12 +438,55 @@
 >   _ <- char ')'
 >   return $ ReflSyntax p x t
 
+> parseIntersectionType :: Parser Syntax
+> parseIntersectionType = do
+>   p <- position
+>   _ <- char '&'
+>   _ <- whitespace0
+>   x <- patternString
+>   _ <- whitespace0
+>   _ <- char ':'
+>   xt <- parseTerm
+>   _ <- char '.'
+>   IntersectionTypeSyntax p x xt <$> parseTerm
+
+> parseIntersection :: Parser Syntax
+> parseIntersection = do
+>   p <- position
+>   _ <- char '['
+>   l <- parseTerm
+>   _ <- char ','
+>   r <- parseTerm
+>   _ <- char ';'
+>   _ <- whitespace0
+>   (IntersectionTypeSyntax _ x xt rt) <- parseTerm
+>   _ <- whitespace0
+>   _ <- char ']'
+>   return $ IntersectionSyntax p l r x xt rt
+
+> parseProjection :: Parser Syntax
+> parseProjection = do
+>   p <- position
+>   _ <- char '.'
+>   n <- oneOf [char '1', char '2']
+>   _ <- whitespace0
+>   _ <- char '('
+>   i <- parseTerm
+>   _ <- char ')'
+>   case n of
+>     '1' -> return $ FstSyntax p i
+>     '2' -> return $ SndSyntax p i
+>     _ -> error "internal error"
+
 > parseTermNoPostfix :: Parser Syntax
 > parseTermNoPostfix = do
 >   _ <- whitespace0
 >   t <- oneOf
 >     [ parseParens
 >     , parseErased
+>     , parseIntersectionType
+>     , parseIntersection
+>     , parseProjection
 >     , parseNat
 >     , parseLet
 >     , parseNatType
@@ -459,6 +505,7 @@
 >              | ApostrophePostfix Pos Syntax
 >              | EqTypePostfix Pos Syntax Syntax
 >              | FuncTypePostfix Pos Syntax
+>              | IntersectionTypePostfix Pos Syntax
 
 > parseTerm :: Parser Syntax
 > parseTerm = do
@@ -498,8 +545,11 @@
 >     , do
 >       p2 <- position
 >       _ <- exact "=>"
->       _ <- whitespace0
 >       FuncTypePostfix p2 <$> parseTerm
+>     , do
+>       p2 <- position
+>       _ <- char '&'
+>       IntersectionTypePostfix p2 <$> parseTerm
 >     ]
 >   let out = case args of
 >         [] -> t
@@ -517,6 +567,7 @@
 >             ApostrophePostfix p2 rhs -> AppSyntax p2 ManyMode b rhs
 >             EqTypePostfix p2 rhs ty -> EqSyntax p2 b rhs ty
 >             FuncTypePostfix p2 rhs -> PiSyntax p2 ManyMode "_" b rhs
+>             IntersectionTypePostfix p2 rhs -> IntersectionTypeSyntax p2 "_" b rhs
 >           ) t args
 >   _ <- whitespace0
 >   return out
@@ -637,6 +688,22 @@
 >       x2 <- tr index renames [] x
 >       ty2 <- tr index renames [] ty
 >       return $ Refl p x2 ty2
+>     IntersectionTypeSyntax p x xt r -> do
+>       xt2 <- tr index renames [] xt
+>       r2 <- tr index (Map.insert x (index, ZeroMode, TypeSort) renames) [] r
+>       return $ IntersectionType p x xt2 r2
+>     IntersectionSyntax p a b x xt r -> do
+>       a2 <- tr index renames psi a
+>       b2 <- tr index (Map.insert x (index, ZeroMode, TypeSort) renames) psi b
+>       xt2 <- tr index renames [] xt
+>       r2 <- tr index (Map.insert x (index, ZeroMode, TypeSort) renames) [] r
+>       return $ Intersection p a2 b2 x xt2 r2
+>     FstSyntax p a -> do
+>       a2 <- tr index renames psi a
+>       return $ Fst p a2
+>     SndSyntax p a -> do
+>       a2 <- tr index renames psi a
+>       return $ Snd p a2
 >     _ -> undefined
 
 > shift :: Int -> Term -> Term
@@ -647,7 +714,7 @@
 >   IntersectionType p x xt body -> IntersectionType p x (shift n xt) (shift (n+1) body)
 >   App p mode foo bar -> App p mode (shift n foo) (shift n bar)
 >   J p a b c d e -> J p (shift n a) (shift n b) (shift n c) (shift n d) (shift n e)
->   Intersection p a b t -> Intersection p (shift n a) (shift n b) (shift n t)
+>   Intersection p a b x xt r -> Intersection p (shift n a) (shift (n+1) b) x (shift n xt) (shift (n+1) r)
 >   Fst p a -> Fst p (shift n a)
 >   Snd p a -> Snd p (shift n a)
 >   Eq p a b t -> Eq p (shift n a) (shift n b) (shift n t)
@@ -665,7 +732,7 @@
 >   IntersectionType p x xt body -> IntersectionType p x xt (subst body (depth + 1) (shift 0 new))
 >   App p mode foo bar -> App p mode (subst foo depth new) (subst bar depth new)
 >   J p a b c d e -> J p (subst a depth new) (subst b depth new) (subst c depth new) (subst d depth new) (subst e depth new)
->   Intersection p a b t -> Intersection p (subst a depth new) (subst b depth new) (subst t depth new)
+>   Intersection p a b x xt r -> Intersection p (subst a depth new) (subst b (depth + 1) (shift 0 new)) x (subst xt depth new) (subst r (depth + 1) (shift 0 new))
 >   Fst p a -> Fst p (subst a depth new)
 >   Snd p a -> Snd p (subst a depth new)
 >   Eq p a b t -> Eq p (subst a depth new) (subst b depth new) (subst t depth new)
@@ -691,6 +758,11 @@
 >   (t, J p _ _ _ _ _) -> termEq gamma t $ identity p
 >   (Refl p _ _, t) -> termEq gamma t $ identity p
 >   (t, Refl p _ _) -> termEq gamma t $ identity p
+>   (Eq _ l1 r1 t1, Eq _ l2 r2 t2) -> termEq gamma l1 l2 && termEq gamma r1 r2 && termEq gamma t1 t2
+>   (IntersectionType _ _ xt t1, IntersectionType _ _ yt t2) -> termEq gamma xt yt && termEq ((ZeroMode,xt,Nothing):gamma) t1 t2
+>   (Intersection _ l1 _ _ _ _, Intersection _ l2 _ _ _ _) -> termEq gamma l1 l2
+>   (Fst _ i, Fst _ j) -> termEq gamma i j
+>   (Snd _ i, Snd _ j) -> termEq gamma i j
 >   _ -> False
 
 > idx :: [a] -> Int -> Maybe a
@@ -706,17 +778,26 @@
 >   App _ _ foo bar -> case eval gamma foo of
 >     Lambda p mode _ _ body -> eval ((mode, NatType p, Just bar):gamma) body -- NatType p as a dummy type, since eval doesn't depend on types
 >     _ -> term
+>   Fst _ (Intersection _ l _ _ _ _) -> l
+>   Snd _ (Intersection _ _ r _ _ _) -> r
 >   _ -> term
 
 > getBinderMode :: Term -> BinderMode
 > getBinderMode ty = case ty of
->   Pi _ _ _ _ body -> getBinderMode body
+>   Pi _ _ _ _ body -> getBinderMode body -- this matters when we distinguish between ZeroMode and TypeMode; for now it's always ZeroMode
 >   Lambda _ _ _ _ body -> getBinderMode body
 >   Ident _p bm _ _i _n -> bm
 >   App _ _ foo _ -> getBinderMode foo
 >   Nat _ _ -> ManyMode
->   NatType _ -> TypeMode
->   Sort _ _ -> TypeMode
+>   NatType _ -> ZeroMode
+>   Sort _ _ -> ZeroMode
+>   Eq {} -> ZeroMode
+>   Refl {} -> ManyMode
+>   J {} -> ManyMode
+>   IntersectionType {} -> ZeroMode
+>   Intersection _ _ l _ _ _ -> getBinderMode l
+>   Fst _ i -> getBinderMode i
+>   Snd _ i -> getBinderMode i
 >   t -> error $ "getBinderMode: " ++ show t
 
 > infer :: Maybe Term -> [(BinderMode, Term, Maybe Term)] -> [Term] -> Term -> Either String Term
@@ -773,6 +854,29 @@
 >     if termEq gamma a_t t then
 >       return $ Eq p a a t
 >     else Left $ "type mismatch, Refl first argument must have second argument as type (`" ++ pretty a_t ++ "` != `" ++ pretty t ++ "`)"
+>   IntersectionType p _x a b -> do
+>     _ <- infer Nothing gamma [] a
+>     _ <- infer Nothing ((ZeroMode,a,Nothing):gamma) [] b
+>     return $ Sort p TypeSort
+>   Intersection p l r x l_t_2 r_t_2 -> 
+>     if termEq gamma l r then do
+>       l_t <- infer Nothing gamma [] l
+>       r_t <- infer Nothing ((ZeroMode,l_t,Just l):gamma) [] r
+>       _ <- infer Nothing gamma [] $ IntersectionType p x l_t_2 r_t_2
+>       if termEq gamma l_t l_t_2 && termEq ((ZeroMode,l_t,Just l):gamma) r_t r_t_2 then
+>         return $ IntersectionType p x l_t_2 r_t_2
+>       else Left $ "type mismatch, Intersection equatees don't match type annotation (`&" ++ x ++ ": " ++ pretty l_t ++ ". " ++ pretty r_t ++ "` should convert to `&" ++ x ++ ": " ++ pretty l_t_2 ++ ". " ++ pretty r_t_2 ++ "`)"
+>     else Left $ "type mismatch, Intersection equatees aren't definitionally equal (`" ++ pretty l ++ "` != `" ++ pretty r ++ "`)"
+>   Fst _ i -> do
+>     i_t <- infer Nothing gamma [] i
+>     case i_t of
+>       IntersectionType _ _ l _ -> return l
+>       _ -> Left $ "type error, Fst argument must be an intersection, but instead has type `" ++ pretty i_t ++ "`"
+>   Snd _ i -> do
+>     i_t <- infer Nothing gamma [] i
+>     case i_t of
+>       IntersectionType _ _ _ r -> return $ subst r 0 i
+>       _ -> Left $ "type error, Snd argument must be an intersection, but instead has type `" ++ pretty i_t ++ "`"
 >   _ -> undefined
 
 > captures :: [Int] -> Int -> Term -> Set.Set Int
@@ -781,7 +885,10 @@
 >   Ident _ _ _ i _ ->
 >     if i < depth then Set.empty else Set.singleton i
 >   App _ ManyMode foo bar -> captures caps depth foo `Set.union` captures caps depth bar
->   App _ _ foo _bar -> captures caps depth foo
+>   App _ ZeroMode foo _bar -> captures caps depth foo
+>   Intersection _ l _ _ _ _ -> captures caps depth l
+>   Fst _ i -> captures caps depth i
+>   Snd _ i -> captures caps depth i
 >   _ -> Set.empty
 
 > lamOp :: Int -> [Word8]
@@ -816,4 +923,7 @@
 >   Nat _ n -> litOp n
 >   J {} -> lamOp 3 ++ varOp 0 ++ retOp -- J compiles to the unerased identity function
 >   Refl {} -> lamOp 3 ++ varOp 0 ++ retOp -- Refl compiles to the unerased identity function
+>   Intersection  _ l _ _ _ _ -> codegen caps kcaps l
+>   Fst _ i -> codegen caps kcaps i
+>   Snd _ i -> codegen caps kcaps i
 >   _ -> undefined
