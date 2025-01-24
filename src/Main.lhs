@@ -1,7 +1,8 @@
+> {-# LANGUAGE GADTs #-}
 > module Main where
 
 > import qualified Data.Map as Map
-> import Data.List (elemIndex)
+> import Data.List (elemIndex, intercalate)
 > import Data.Either (partitionEithers)
 > import Data.Foldable (foldl')
 > import Data.Char (isAlpha, isDigit)
@@ -10,7 +11,7 @@
 > import System.IO (stdout, IOMode(WriteMode), openFile)
 > import qualified Data.ByteString as B
 > import Data.Word (Word8)
-> import Data.Maybe (fromMaybe, fromJust)
+> import Data.Maybe (fromMaybe)
 > import qualified Data.Set as Set
 > import System.Process (system)
 > import Control.Monad (when)
@@ -29,7 +30,7 @@
 >         case res of
 >           Left err -> putStrLn err
 >           Right t2 -> do
->             case infer Nothing [] [] t2 of
+>             case infer [] t2 of
 >               Left err -> putStrLn err
 >               Right _t3 -> do
 >                 let bytecode = codegen [] [] t2 ++ [29, 0]
@@ -48,14 +49,14 @@
 > class Pretty a where
 >   pretty :: a -> String
 
-> data BinderMode = ZeroMode | ManyMode deriving (Show, Eq)
+> data BinderMode = ZeroMode | ManyMode | TypeMode deriving (Show, Eq)
 
 > data Sort = TypeSort | KindSort deriving (Show, Eq)
 
-> data Syntax = LambdaSyntax Pos BinderMode String (Maybe Syntax) Syntax
+> data Syntax = LambdaSyntax Pos BinderMode String Syntax Syntax
 >             | IdentSyntax Pos String
 >             | AppSyntax Pos BinderMode Syntax Syntax
->             | ImmediateAppSyntax Pos String [(BinderMode, String, Maybe Syntax)] Syntax Syntax
+>             | ImmediateAppSyntax Pos String [(BinderMode, String, Syntax)] Syntax Syntax Syntax
 >             | NatSyntax Pos Int
 >             | NatTypeSyntax Pos
 >             | SortSyntax Pos Sort
@@ -77,7 +78,7 @@
 >   LambdaSyntax p _ _ _ _ -> p
 >   IdentSyntax p _ -> p
 >   AppSyntax p _ _ _ -> p
->   ImmediateAppSyntax p _ _ _ _ -> p
+>   ImmediateAppSyntax p _ _ _ _ _ -> p
 >   NatSyntax p _ -> p
 >   NatTypeSyntax p -> p
 >   SortSyntax p _ -> p
@@ -93,24 +94,21 @@
 >   CastSyntax p _ _ _ -> p
 >   ExFalsoSyntax p _ -> p
 
-> prettyParams :: [(BinderMode, String, Maybe Syntax)] -> String
+> prettyParams :: [(BinderMode, String, Syntax)] -> String
 > prettyParams = concatMap (\(mode, x, mb_t) -> case (mode, mb_t) of
->     (ManyMode, Just t) -> "(" ++ x ++ ": " ++ pretty t ++ ")"
->     (ManyMode, Nothing) -> "(" ++ x ++ ")"
->     (_,  Just t) -> "<" ++ x ++ ": " ++ pretty t ++ ">"
->     (_, Nothing) -> "<" ++ x ++ ">"
+>     (ManyMode, t) -> "(" ++ x ++ ": " ++ pretty t ++ ")"
+>     (ZeroMode, t) -> "{" ++ x ++ ": " ++ pretty t ++ "}"
+>     (TypeMode, t) -> "<" ++ x ++ ": " ++ pretty t ++ ">"
 >   )
 
 > instance Pretty Syntax where
 >   pretty stx = case stx of
->     LambdaSyntax _ ManyMode x (Just t) e -> "(" ++ x ++ ": " ++ pretty t ++ ")-> " ++ pretty e
->     LambdaSyntax _ ManyMode x Nothing e -> "(" ++ x ++ ")-> " ++ pretty e
->     LambdaSyntax _ _ x (Just t) e -> "<" ++ x ++ ": " ++ pretty t ++ ">-> " ++ pretty e
->     LambdaSyntax _ _ x Nothing e -> "<" ++ x ++ ">-> " ++ pretty e
+>     LambdaSyntax _ ManyMode x t e -> "(" ++ x ++ ": " ++ pretty t ++ ")-> " ++ pretty e
+>     LambdaSyntax _ _ x t e -> "<" ++ x ++ ": " ++ pretty t ++ ">-> " ++ pretty e
 >     IdentSyntax _ s -> s
 >     AppSyntax _ ManyMode f a -> "(" ++ pretty f ++ ")(" ++ pretty a ++ ")"
 >     AppSyntax _ _ f a -> "(" ++ pretty f ++ ")<" ++ pretty a ++ ">"
->     ImmediateAppSyntax _ x params v e -> "let " ++ x ++ prettyParams params ++ " = " ++ pretty v ++ " in " ++ pretty e
+>     ImmediateAppSyntax _ x params t v e -> "let " ++ x ++ prettyParams params ++ ": " ++ pretty t ++ " = " ++ pretty v ++ " in " ++ pretty e
 >     NatSyntax _ n -> show n
 >     NatTypeSyntax _ -> "Nat"
 >     SortSyntax _ TypeSort -> "Type"
@@ -122,56 +120,96 @@
 >     IntersectionSyntax p a b x xt r -> "[" ++ pretty a ++ ", " ++ pretty b ++ "; " ++ pretty (IntersectionTypeSyntax p x xt r) ++ "]"
 >     FstSyntax _ a -> ".1(" ++ pretty a ++ ")"
 >     SndSyntax _ a -> ".2(" ++ pretty a ++ ")"
->     EqSyntax _ a b t -> "(" ++ pretty a ++ ") =" ++ pretty t ++ "= (" ++ pretty b ++ ")"
+>     EqSyntax _ a b t -> "(" ++ pretty a ++ ") =[" ++ pretty t ++ "] (" ++ pretty b ++ ")"
 >     ReflSyntax _ a t -> "refl(" ++ pretty a ++ ", " ++ pretty t ++ ")"
 >     InterEqSyntax _ eq i j t -> "^(" ++ pretty eq ++ "; " ++ pretty i ++ ", " ++ pretty j ++ "; " ++ pretty t ++ ")"
 >     CastSyntax _ a b eq -> "cast(" ++ pretty a ++ ", " ++ pretty b ++ ", " ++ pretty eq ++ ", " ++ ")"
 >     ExFalsoSyntax _ a -> "exfalso(" ++ pretty a ++ ")"
 
-> data Term = Lambda Pos BinderMode String (Maybe Term) Term
->           | Ident Pos BinderMode Sort Int String
->           | App Pos BinderMode Term Term
->           | Nat Pos Int
->           | NatType Pos
->           | Sort Pos Sort
->           | Pi Pos BinderMode String Term Term
->           | J Pos Term Term Term Term Term
->           | IntersectionType Pos String Term Term
->           | Intersection Pos Term Term String Term Term
->           | Fst Pos Term
->           | Snd Pos Term
->           | Eq Pos Term Term Term
->           | Refl Pos Term Term
->           | InterEq Pos Term Term Term Term
->           | Cast Pos Term Term Term
->           | ExFalso Pos Term
->           deriving Show
+> data Binder where
+>   Lambda :: BinderMode -> Binder
+>   Pi :: BinderMode -> Binder
+>   InterT :: Binder
+
+> data Constructor0 where
+>   Diamond :: Constructor0
+>   Sort :: Sort -> Constructor0
+>   NatT :: Constructor0
+>   Nat :: Int -> Constructor0
+> data Constructor1 where
+>   Fst :: Constructor1 
+>   Snd :: Constructor1 
+>   ExFalso :: Constructor1
+> data Constructor2 where 
+>   App :: BinderMode -> Constructor2
+>   Refl :: Constructor2
+> data Constructor3 where
+>   Inter :: Constructor3 
+>   Eq :: Constructor3
+>   Cast :: Constructor3
+> data Constructor4 where
+>   InterEq :: Constructor4
+> data Constructor5 where 
+>   J :: Constructor5
+
+> data Term where
+>   Ident :: Pos -> BinderMode -> Sort -> Int -> String -> Term
+>   Binder :: Pos -> Binder -> String -> Term -> Term -> Term
+>   Constructor0 :: Pos -> Constructor0 -> Term
+>   Constructor1 :: Pos -> Constructor1 -> Term -> Term
+>   Constructor2 :: Pos -> Constructor2 -> Term -> Term -> Term
+>   Constructor3 :: Pos -> Constructor3 -> Term -> Term -> Term -> Term
+>   Constructor4 :: Pos -> Constructor4 -> Term -> Term -> Term -> Term -> Term
+>   Constructor5 :: Pos -> Constructor5 -> Term -> Term -> Term -> Term -> Term -> Term
 
 > instance Pretty Term where
 >   pretty t = case t of
->     Lambda _ ManyMode x (Just ty) e -> "(" ++ x ++ ": " ++ pretty ty ++ ")-> " ++ pretty e
->     Lambda _ ManyMode x Nothing e -> "(" ++ x ++ ")-> " ++ pretty e
->     Lambda _ _ x (Just ty) e -> "<" ++ x ++ ": " ++ pretty ty ++ ">-> " ++ pretty e
->     Lambda _ _ x Nothing e -> "<" ++ x ++ ">-> " ++ pretty e
->     Ident _ _ _ _ x -> x
->     App _ ManyMode foo bar -> "(" ++ pretty foo ++ ")(" ++ pretty bar ++ ")"
->     App _ _ foo bar -> "(" ++ pretty foo ++ ")<" ++ pretty bar ++ ">"
->     Nat _ n -> show n
->     NatType _ -> "Nat"
->     Sort _ TypeSort -> "Type"
->     Sort _ KindSort -> "Kind"
->     Pi _ ManyMode x ty e -> "(" ++ x ++ ": " ++ pretty ty ++ ")=> " ++ pretty e
->     Pi _ _ x ty e -> "<" ++ x ++ ": " ++ pretty ty ++ ">=> " ++ pretty e
->     J _ a b c d e -> "J(" ++ pretty a ++ ", " ++ pretty b ++ ", " ++ pretty c ++ ", " ++ pretty d ++ ", " ++ pretty e ++ ")"
->     IntersectionType _ x ty e -> "(" ++ x ++ ": " ++ pretty ty ++ ")&" ++ pretty e
->     Intersection p a b x xt r -> "[" ++ pretty a ++ ", " ++ pretty b ++ "; " ++ pretty (IntersectionType p x xt r) ++ "]"
->     Fst _ a -> ".1(" ++ pretty a ++ ")"
->     Snd _ a -> ".2(" ++ pretty a ++ ")"
->     Eq _ a b ty -> "(" ++ pretty a ++ ") =" ++ pretty ty ++ "= (" ++ pretty b ++ ")"
->     Refl _ a ty -> "refl(" ++ pretty a ++ ", " ++ pretty ty ++ ")"
->     InterEq _ eq i j ty -> "^(" ++ pretty eq ++ "; " ++ pretty i ++ ", " ++ pretty j ++ "; " ++ pretty ty ++ ")"
->     Cast _ a b eq -> "cast(" ++ pretty a ++ ", " ++ pretty b ++ ", " ++ pretty eq ++ ", " ++ ")"
->     ExFalso _ a -> "exfalso(" ++ pretty a ++ ")"
+>     Ident _ _ _ i x -> x ++ show i
+>     Binder _ (Lambda ManyMode) x ty e -> "(" ++ x ++ ": " ++ pretty ty ++ ")-> " ++ pretty e
+>     Binder _ (Lambda ZeroMode) x ty e -> "{" ++ x ++ ": " ++ pretty ty ++ "}-> " ++ pretty e
+>     Binder _ (Lambda TypeMode) x ty e -> "<" ++ x ++ ": " ++ pretty ty ++ ">-> " ++ pretty e
+>     Binder _ (Pi ManyMode) "_" a b -> "(" ++ pretty a ++ ")=> " ++ pretty b
+>     Binder _ (Pi ManyMode) x ty e -> "(" ++ x ++ ": " ++ pretty ty ++ ")=> " ++ pretty e
+>     Binder _ (Pi ZeroMode) "_" a b -> "{" ++ pretty a ++ "}=> " ++ pretty b
+>     Binder _ (Pi ZeroMode) x ty e -> "{" ++ x ++ ": " ++ pretty ty ++ "}=> " ++ pretty e
+>     Binder _ (Pi TypeMode) "_" a b -> "<" ++ pretty a ++ ">=> " ++ pretty b
+>     Binder _ (Pi TypeMode) x ty e -> "<" ++ x ++ ": " ++ pretty ty ++ ">=> " ++ pretty e
+>     Binder _ InterT x ty e -> "(" ++ x ++ ": " ++ pretty ty ++ ")&(" ++ pretty e ++ ")"
+>     Constructor0 _ Diamond -> "<>"
+>     Constructor0 _ (Sort TypeSort) -> "Type"
+>     Constructor0 _ (Sort KindSort) -> "Kind"
+>     Constructor0 _ NatT -> "Nat"
+>     Constructor0 _ (Nat n) -> show n
+>     Constructor1 _ Fst a -> ".1(" ++ pretty a ++ ")"
+>     Constructor1 _ Snd a -> ".2(" ++ pretty a ++ ")"
+>     Constructor1 _ ExFalso a -> "exfalso(" ++ pretty a ++ ")"
+>     Constructor2 _ (App ManyMode) foo bar -> "(" ++ pretty foo ++ ")(" ++ pretty bar ++ ")"
+>     Constructor2 _ (App ZeroMode) foo bar -> "(" ++ pretty foo ++ "){" ++ pretty bar ++ "}"
+>     Constructor2 _ (App TypeMode) foo bar -> "(" ++ pretty foo ++ ")<" ++ pretty bar ++ ">"
+>     Constructor2 _ Refl a ty -> "refl(" ++ pretty a ++ ", " ++ pretty ty ++ ")"
+>     Constructor3 _ Inter a b ty -> "[" ++ pretty a ++ ", " ++ pretty b ++ "; " ++ pretty ty ++ "]"
+>     Constructor3 _ Eq a b ty -> "(" ++ pretty a ++ ") =[" ++ pretty ty ++ "] (" ++ pretty b ++ ")"
+>     Constructor3 _ Cast a b eq -> "cast " ++ pretty a ++ " to " ++ pretty b ++ " via " ++ pretty eq
+>     Constructor4 _ InterEq projEq inter1 inter2 interT -> "^(" ++ pretty projEq ++ "; " ++ pretty inter1 ++ ", " ++ pretty inter2 ++ "; " ++ pretty interT ++ ")"
+>     Constructor5 _ J eq a b ty p -> "J(" ++ pretty eq ++ ", " ++ pretty a ++ ", " ++ pretty b ++ ", " ++ pretty ty ++ ", " ++ pretty p ++ ")"
+
+> prettyContext :: [(a, Term, b)] -> String
+> prettyContext gamma = intercalate ", " $ map (\(_, t, _) -> pretty t) gamma
+
+> data PseobjBinderMode = PManyMode | PTypeMode
+
+> data Pseobj where
+>   PIdent :: Int -> Pseobj
+>   PLambda :: Pseobj -> Pseobj
+>   PTyLambda :: Pseobj -> Pseobj -> Pseobj
+>   PPi :: BinderMode -> Pseobj -> Pseobj -> Pseobj
+>   PInterT :: Pseobj -> Pseobj -> Pseobj
+>   PDiamond :: Pseobj
+>   PSort :: Sort -> Pseobj
+>   PNatT :: Pseobj
+>   PNat :: Int -> Pseobj
+>   PApp :: PseobjBinderMode -> Pseobj -> Pseobj -> Pseobj
+>   PEq :: Pseobj -> Pseobj -> Pseobj -> Pseobj
 
 > newtype Parser a = Parser {
 >   run :: Maybe String -> Pos -> String -> Either String (a, Pos, String)
@@ -297,37 +335,35 @@
 >   _ <- whitespace -- TODO: should be not(oneOf[satisfy isAlpha, satisfy isDigit, char '_'])
 >   i <- patternString
 >   _ <- whitespace0
->   (ident, let_type, params, mb_t) <- do
+>   (ident, let_type, params, t) <- do
 >     mb_params <- possible parseParams
 >     _ <- whitespace0
->     res <- possible $ char ':'
->     mb_t <- case res of
->       Just _ -> Just <$> parseTerm
->       Nothing -> return Nothing
+>     _ <- char ':'
+>     t <- parseTerm
 >     case mb_params of
 >       Just params -> do
 >         _ <- char '='
->         return (i, Basic, params, mb_t)
+>         return (i, Basic, params, t)
 >       Nothing -> do
 >         op <- oneOf [exact "=", exact "<-"]
 >         case op of
->           "=" -> return (i, Basic, [], mb_t)
->           "<-" -> return (i, Back, [], mb_t)
+>           "=" -> return (i, Basic, [], t)
+>           "<-" -> return (i, Back, [], t)
 >           _ -> error "internal error"
 >   val <- parseTerm
 >   _ <- exact "in"
 >   _ <- whitespace -- TODO: should be not(oneOf[satisfy isAlpha, satisfy isDigit, char '_'])
 >   scope <- parseTerm
 >   return $ case let_type of
->     Basic -> ImmediateAppSyntax p ident params val scope
->     Back -> AppSyntax p ManyMode val (LambdaSyntax p ManyMode ident mb_t scope)
+>     Basic -> ImmediateAppSyntax p ident params t val scope
+>     Back -> AppSyntax p ManyMode val (LambdaSyntax p ManyMode ident t scope)
 
 > buildPi :: Pos -> [(BinderMode, String, Syntax)] -> Syntax -> Syntax
 > buildPi _p [] t = t
 > buildPi p [(binder_mode, x, xt)] rett = PiSyntax p binder_mode x xt rett
 > buildPi p ((binder_mode, x, xt):xs) rett = PiSyntax p binder_mode x xt (buildPi p xs rett)
 
-> buildLambda :: Pos -> [(BinderMode, String, Maybe Syntax)] -> Syntax -> Syntax
+> buildLambda :: Pos -> [(BinderMode, String, Syntax)] -> Syntax -> Syntax
 > buildLambda _p [] e = e
 > buildLambda p ((binder_mode, x, xt):xs) e = LambdaSyntax p binder_mode x xt (buildLambda p xs e)
 
@@ -336,32 +372,29 @@
 >   p <- position
 >   _ <- char '('
 >   _ <- whitespace0
->   res <- possible identString
+>   res <- possible $ do
+>     x <- identString
+>     _ <- whitespace0
+>     res2 <- possible $ char ':'
+>     case res2 of
+>       Just _ -> do
+>         t <- parseTerm
+>         _ <- char ')'
+>         _ <- whitespace0
+>         next <- oneOf [exact "&", exact "->", exact "=>"]
+>         _ <- whitespace0
+>         right <- parseTerm
+>         case next of
+>           "&" -> return $ IntersectionTypeSyntax p x t right
+>           "->" -> return $ LambdaSyntax p ManyMode x t right
+>           "=>" -> return $ PiSyntax p ManyMode x t right
+>           _ -> error "internal error"
+>       Nothing -> do
+>         _ <- whitespace0
+>         _ <- char ')'
+>         return $ IdentSyntax p x
 >   case res of
->     Just x -> do
->       _ <- whitespace0
->       res2 <- possible $ char ':'
->       case res2 of
->         Just _ -> do
->           t <- parseTerm
->           _ <- char ')'
->           _ <- whitespace0
->           next <- oneOf [exact "&", exact "->", exact "=>"]
->           _ <- whitespace0
->           right <- parseTerm
->           case next of
->             "&" -> return $ IntersectionTypeSyntax p x t right
->             "->" -> return $ LambdaSyntax p ManyMode x (Just t) right
->             "=>" -> return $ PiSyntax p ManyMode x t right
->             _ -> error "internal error"
->         Nothing -> do
->           _ <- whitespace0
->           _ <- char ')'
->           _ <- whitespace0
->           res3 <- possible $ exact "->"
->           case res3 of
->             Just _ -> LambdaSyntax p ManyMode x Nothing <$> parseTerm
->             Nothing -> return $ IdentSyntax p x
+>     Just x -> return x
 >     Nothing -> do
 >       t <- parseTerm
 >       _ <- char ')'
@@ -395,17 +428,15 @@
 >   _ <- whitespace0
 >   x <- patternString
 >   _ <- whitespace0
->   res <- possible $ char ':'
->   t <- case res of
->     Just _ -> Just <$> parseTerm
->     Nothing -> return Nothing
+>   _ <- char ':'
+>   t <- parseTerm
 >   _ <- char '>'
 >   _ <- whitespace0
 >   res2 <- oneOf [exact "->", exact "=>"]
 >   right <- parseTerm
 >   case res2 of
 >     "->" -> return $ LambdaSyntax p ZeroMode x t right
->     "=>" -> return $ PiSyntax p ZeroMode x (fromJust t) right
+>     "=>" -> return $ PiSyntax p ZeroMode x t right
 >     _ -> error "internal error"
 
 > parseJ :: Parser Syntax
@@ -459,7 +490,7 @@
 >   r <- parseTerm
 >   _ <- char ';'
 >   _ <- whitespace0
->   (IntersectionTypeSyntax _ x xt rt) <- parseTerm
+>   (IntersectionTypeSyntax _ x xt rt) <- parseTerm -- lol, this is used in the translation, but we need to polish this later
 >   _ <- whitespace0
 >   _ <- char ']'
 >   return $ IntersectionSyntax p l r x xt rt
@@ -572,28 +603,22 @@
 >   _ <- whitespace0
 >   return out
 
-> parseParams :: Parser [(BinderMode, String, Maybe Syntax)]
+> parseParams :: Parser [(BinderMode, String, Syntax)]
 > parseParams = many $ do
 >     res <- oneOf [char '(', char '<']
 >     _ <- whitespace0
 >     param <- patternString
 >     _ <- whitespace0
->     res2 <- possible $ char ':'
->     case (res, res2) of
->       ('(', Just _) -> do
+>     _ <- char ':'
+>     case res of
+>       '(' -> do
 >         t <- parseTerm
 >         _ <- char ')'
->         return (ManyMode, param, Just t)
->       ('<', Just _) -> do
+>         return (ManyMode, param, t)
+>       '<' -> do
 >         t <- parseTerm
 >         _ <- char '>'
->         return (ZeroMode, param, Just t)
->       ('(', Nothing) -> do
->         _ <- char ')'
->         return (ManyMode, param, Nothing)
->       ('<', Nothing) -> do
->         _ <- char '>'
->         return (ZeroMode, param, Nothing)
+>         return (ZeroMode, param, t)
 >       _ -> error "internal error"
 
 > parseDecl :: Parser (Either (String, (Syntax, Syntax)) [String])
@@ -630,27 +655,21 @@
 > sortOf renames (Ident _ _ _ _ s) = case Map.lookup s renames of
 >   Just (_, _, sort) -> sort
 >   Nothing -> error "internal error"
-> sortOf renames (Pi _ _ _ _ body) = sortOf renames body
-> sortOf _renames (NatType _) = TypeSort
-> sortOf _renames (Sort _ _) = KindSort
+> sortOf renames (Binder _ (Pi _) _ _ body) = sortOf renames body
+> sortOf _renames (Binder _ InterT _ _ _) = TypeSort
+> sortOf _renames (Constructor0 _ NatT) = TypeSort
+> sortOf _renames (Constructor0 _ (Sort TypeSort)) = KindSort
+> sortOf _renames (Constructor3 _ Eq _ _ _) = TypeSort
 > sortOf _renames _term = error "internal error"
 
 > translate :: Int -> Map.Map String (Int, BinderMode, Sort) -> [Term] -> Syntax -> Either String Term
 > translate index renames psi t =
 >   let tr = translate in
 >   case t of
->     LambdaSyntax p binder_mode param mb_ty body ->
->       case mb_ty of
->         Just ty -> do
->           ty2 <- tr index renames [] ty
->           body2 <- tr (index + 1) (Map.insert param (index, binder_mode, sortOf renames ty2) renames) (tail psi) body
->           return $ Lambda p binder_mode param (Just ty2) body2
->         Nothing -> 
->           case psi of
->             arg:rest -> do
->               body2 <- tr (index + 1) (Map.insert param (index, binder_mode, sortOf renames arg) renames) rest body
->               return $ Lambda p binder_mode param Nothing body2
->             [] -> Left $ "Type error. This lambda needs a type annotation (" ++ show p ++ ")"
+>     LambdaSyntax p binder_mode param ty body -> do
+>       ty2 <- tr index renames [] ty
+>       body2 <- tr (index + 1) (Map.insert param (index, binder_mode, sortOf renames ty2) renames) (tail psi) body
+>       return $ Binder p (Lambda binder_mode) param ty2 body2
 >     IdentSyntax p ('#':name) -> return $ Ident p ManyMode TypeSort 0 $ '#':name
 >     IdentSyntax p name ->
 >       case Map.lookup name renames of
@@ -659,236 +678,291 @@
 >     AppSyntax p bm foo bar -> do
 >       bar2 <- tr index renames [] bar
 >       foo2 <- tr index renames (bar2:psi) foo
->       return $ App p bm foo2 bar2
->     ImmediateAppSyntax p x params v e -> do
+>       return $ Constructor2 p (App bm) foo2 bar2
+>     ImmediateAppSyntax p x params ty v e -> do
+>       ty2 <- tr index renames [] ty
 >       v2 <- tr index renames [] (buildLambda p params v)
->       let binder_mode = getBinderMode v2
+>       let binder_mode = letBinderMode v2
 >       e2 <- tr (index + 1) (Map.insert x (index, binder_mode, sortOf renames v2) renames) psi e
->       return $ App p binder_mode (Lambda p binder_mode x Nothing e2) v2
->     NatSyntax p n -> return $ Nat p n
->     NatTypeSyntax p -> return $ NatType p
->     SortSyntax p s -> return $ Sort p s
+>       return $ Constructor2 p (App binder_mode) (Binder p (Lambda binder_mode) x ty2 e2) v2
+>     NatSyntax p n -> return $ Constructor0 p (Nat n)
+>     NatTypeSyntax p -> return $ Constructor0 p NatT
+>     SortSyntax p s -> return $ Constructor0 p (Sort s)
 >     PiSyntax p binder_mode param ty body -> do
 >       ty2 <- tr index renames [] ty
 >       body2 <- tr (index + 1) (Map.insert param (index, binder_mode, sortOf renames ty2) renames) psi body
->       return $ Pi p binder_mode param ty2 body2
+>       return $ Binder p (Pi binder_mode) param ty2 body2
 >     JSyntax p eq a b c predicate -> do
 >       eq2 <- tr index renames [] eq
 >       a2 <- tr index renames [] a
 >       b2 <- tr index renames [] b
 >       c2 <- tr index renames [] c
 >       predicate2 <- tr index renames [] predicate
->       return $ J p eq2 a2 b2 c2 predicate2
+>       return $ Constructor5 p J eq2 a2 b2 c2 predicate2
 >     EqSyntax p a b ty -> do
 >       a2 <- tr index renames [] a
 >       b2 <- tr index renames [] b
 >       ty2 <- tr index renames [] ty
->       return $ Eq p a2 b2 ty2
+>       return $ Constructor3 p Eq a2 b2 ty2
 >     ReflSyntax p x ty -> do
 >       x2 <- tr index renames [] x
 >       ty2 <- tr index renames [] ty
->       return $ Refl p x2 ty2
+>       return $ Constructor2 p Refl x2 ty2
 >     IntersectionTypeSyntax p x xt r -> do
 >       xt2 <- tr index renames [] xt
->       r2 <- tr index (Map.insert x (index, ZeroMode, TypeSort) renames) [] r
->       return $ IntersectionType p x xt2 r2
+>       r2 <- tr (index + 1) (Map.insert x (index, ZeroMode, TypeSort) renames) [] r
+>       return $ Binder p InterT x xt2 r2
 >     IntersectionSyntax p a b x xt r -> do
 >       a2 <- tr index renames psi a
->       b2 <- tr index (Map.insert x (index, ZeroMode, TypeSort) renames) psi b
+>       b2 <- tr (index + 1) (Map.insert x (index, ZeroMode, TypeSort) renames) psi b
 >       xt2 <- tr index renames [] xt
->       r2 <- tr index (Map.insert x (index, ZeroMode, TypeSort) renames) [] r
->       return $ Intersection p a2 b2 x xt2 r2
+>       r2 <- tr (index + 1) (Map.insert x (index, ZeroMode, TypeSort) renames) [] r
+>       return $ Constructor3 p Inter a2 b2 $ Binder p InterT x xt2 r2
 >     FstSyntax p a -> do
 >       a2 <- tr index renames psi a
->       return $ Fst p a2
+>       return $ Constructor1 p Fst a2
 >     SndSyntax p a -> do
 >       a2 <- tr index renames psi a
->       return $ Snd p a2
+>       return $ Constructor1 p Snd a2
 >     _ -> undefined
 
-> shift :: Int -> Term -> Term
-> shift n term = case term of
->   Ident p bm s i str | i >= n -> Ident p bm s (i + 1) str
->   Pi p mode x xt body -> Pi p mode x (shift n xt) (shift (n+1) body)
->   Lambda p mode x xt body -> Lambda p mode x (shift n <$> xt) (shift (n+1) body)
->   IntersectionType p x xt body -> IntersectionType p x (shift n xt) (shift (n+1) body)
->   App p mode foo bar -> App p mode (shift n foo) (shift n bar)
->   J p a b c d e -> J p (shift n a) (shift n b) (shift n c) (shift n d) (shift n e)
->   Intersection p a b x xt r -> Intersection p (shift n a) (shift (n+1) b) x (shift n xt) (shift (n+1) r)
->   Fst p a -> Fst p (shift n a)
->   Snd p a -> Snd p (shift n a)
->   Eq p a b t -> Eq p (shift n a) (shift n b) (shift n t)
->   Refl p a t -> Refl p (shift n a) (shift n t)
->   InterEq p eq a b t -> InterEq p (shift n eq) (shift n a) (shift n b) (shift n t)
->   Cast p a b t -> Cast p (shift n a) (shift n b) (shift n t)
->   ExFalso p a -> ExFalso p (shift n a)
->   _ -> term
+> shift :: Int -> Int -> Term -> Term
+> shift depth amt term = 
+>   let sh d = shift d amt in
+>   case term of
+>     Ident p bm s i str | i >= depth -> Ident p bm s (i + amt) str
+>     Ident p bm s i str -> Ident p bm s i str
+>     Binder p b x xt body -> Binder p b x (sh depth xt) (sh (depth + 1) body)
+>     Constructor0 p k -> Constructor0 p k
+>     Constructor1 p k a -> Constructor1 p k (sh depth a)
+>     Constructor2 p k a b -> Constructor2 p k (sh depth a) (sh depth b)
+>     Constructor3 p Inter a b t -> Constructor3 p Inter (sh depth a) (sh (depth+1) b) (sh depth t)
+>     Constructor3 p k a b c -> Constructor3 p k (sh depth a) (sh depth b) (sh depth c)
+>     Constructor4 p k a b c d -> Constructor4 p k (sh depth a) (sh depth b) (sh depth c) (sh depth d)
+>     Constructor5 p k a b c d e -> Constructor5 p k (sh depth a) (sh depth b) (sh depth c) (sh depth d) (sh depth e)
+
+> inc :: Term -> Term
+> inc = shift 0 1
+> dec :: Term -> Term
+> dec = shift 0 (-1)
 
 > subst :: Term -> Int -> Term -> Term
 > subst term depth new = case term of
 >   Ident _ _ _ i _ -> if depth == i then new else term
->   Pi p mode x xt body -> Pi p mode x (subst xt depth new) (subst body (depth + 1) (shift 0 new))
->   Lambda p mode x xt body -> Lambda p mode x xt (subst body (depth + 1) (shift 0 new))
->   IntersectionType p x xt body -> IntersectionType p x xt (subst body (depth + 1) (shift 0 new))
->   App p mode foo bar -> App p mode (subst foo depth new) (subst bar depth new)
->   J p a b c d e -> J p (subst a depth new) (subst b depth new) (subst c depth new) (subst d depth new) (subst e depth new)
->   Intersection p a b x xt r -> Intersection p (subst a depth new) (subst b (depth + 1) (shift 0 new)) x (subst xt depth new) (subst r (depth + 1) (shift 0 new))
->   Fst p a -> Fst p (subst a depth new)
->   Snd p a -> Snd p (subst a depth new)
->   Eq p a b t -> Eq p (subst a depth new) (subst b depth new) (subst t depth new)
->   Refl p a t -> Refl p (subst a depth new) (subst t depth new)
->   InterEq p eq a b t -> InterEq p (subst eq depth new) (subst a depth new) (subst b depth new) (subst t depth new)
->   Cast p a b t -> Cast p (subst a depth new) (subst b depth new) (subst t depth new)
->   ExFalso p a -> ExFalso p (subst a depth new)
->   _ -> term
+>   Binder p b x xt body -> Binder p b x (subst xt depth new) (subst body (depth + 1) (inc new))
+>   Constructor0 p k -> Constructor0 p k
+>   Constructor1 p k a -> Constructor1 p k (subst a depth new)
+>   Constructor2 p k foo bar -> Constructor2 p k (subst foo depth new) (subst bar depth new)
+>   Constructor3 p Inter a b t -> Constructor3 p Inter (subst a depth new) (subst b (depth + 1) (inc new)) (subst t depth new)
+>   Constructor3 p k a b c -> Constructor3 p k (subst a depth new) (subst b depth new) (subst c depth new)
+>   Constructor4 p k a b c d -> Constructor4 p k (subst a depth new) (subst b depth new) (subst c depth new) (subst d depth new)
+>   Constructor5 p k a b c d e -> Constructor5 p k (subst a depth new) (subst b depth new) (subst c depth new) (subst d depth new) (subst e depth new)
 
 > identity :: Pos -> Term
-> identity p = Lambda p ManyMode "x" Nothing $ Ident p ManyMode TypeSort 0 "x"
+> identity p = Binder p (Lambda ManyMode) "x" (Constructor0 p NatT) $ Ident p ManyMode TypeSort 0 "x"
 
-> termEq :: [(BinderMode, Term, Maybe Term)] -> Term -> Term -> Bool
-> termEq gamma a b = case (eval gamma a, eval gamma b) of
->   (Ident _ _ _ i _, Ident _ _ _ j _) -> i == j
->   (NatType _, NatType _) -> True
->   (Sort _ s1, Sort _ s2) -> s1 == s2
->   (Pi _ mode1 _ xt body1, Pi _ mode2 _ yt body2) -> mode1 == mode2 && termEq gamma xt yt && termEq ((mode1,xt,Nothing):gamma) body1 body2
->   (Lambda _ mode1 _ _xt body1, Lambda _ mode2 _ _yt body2) -> mode1 == mode2 && termEq ((mode1,body1,Nothing):gamma) body1 body2 -- using body1 as a dummy type because it won't matter
->   (App _ _ foo1 bar1, App _ _ foo2 bar2) -> termEq gamma foo1 foo2 && termEq gamma bar1 bar2
->   (Nat _ n, Nat _ m) -> n == m
->   (J p _ _ _ _ _, t) -> termEq gamma t $ identity p
->   (t, J p _ _ _ _ _) -> termEq gamma t $ identity p
->   (Refl p _ _, t) -> termEq gamma t $ identity p
->   (t, Refl p _ _) -> termEq gamma t $ identity p
->   (Eq _ l1 r1 t1, Eq _ l2 r2 t2) -> termEq gamma l1 l2 && termEq gamma r1 r2 && termEq gamma t1 t2
->   (IntersectionType _ _ xt t1, IntersectionType _ _ yt t2) -> termEq gamma xt yt && termEq ((ZeroMode,xt,Nothing):gamma) t1 t2
->   (Intersection _ l1 _ _ _ _, Intersection _ l2 _ _ _ _) -> termEq gamma l1 l2
->   (Fst _ i, Fst _ j) -> termEq gamma i j
->   (Snd _ i, Snd _ j) -> termEq gamma i j
+> pseEq :: [Maybe Pseobj] -> Pseobj -> Pseobj -> Bool
+> pseEq gamma a b = case (a, b) of
+>   (PIdent i, PIdent j) -> i == j
+>   (PNatT, PNatT) -> True
+>   (PSort s1, PSort s2) -> s1 == s2
+>   (PPi mode1 xt body1, PPi mode2 yt body2) -> mode1 == mode2 && pseEq gamma xt yt && pseEq (Nothing:gamma) body1 body2
+>   (PLambda body1, PLambda body2) -> pseEq (Nothing:gamma) body1 body2
+>   (PTyLambda xt1 body1, PTyLambda xt2 body2) -> pseEq gamma xt1 xt2 && pseEq (Nothing:gamma) body1 body2
+>   (PApp _ foo1 bar1, PApp _ foo2 bar2) -> pseEq gamma foo1 foo2 && pseEq gamma bar1 bar2
+>   (PNat n, PNat m) -> n == m
+>   (PEq l1 r1 t1, PEq l2 r2 t2) -> pseEq gamma l1 l2 && pseEq gamma r1 r2 && pseEq gamma t1 t2
+>   (PInterT xt t1, PInterT yt t2) -> pseEq gamma xt yt && pseEq (Nothing:gamma) t1 t2
+>   (PDiamond, PDiamond) -> True
 >   _ -> False
+
+> termEq :: [(a, b)] -> Term -> Term -> Bool
+> termEq gamma a b = let g = eraseContext gamma in pseEq g (eval g $ erase a) (eval g $ erase b)
+
+> erase :: Term -> Pseobj
+> erase term = case term of
+>   Ident _ _ _ i _ -> PIdent i
+>   Binder _ (Lambda ZeroMode) _ _ body -> erase body
+>   Binder _ (Lambda ManyMode) _ _ body -> PLambda $ erase body
+>   Binder _ (Lambda TypeMode) _ xt body -> PTyLambda (erase xt) $ erase body
+>   Binder _ (Pi m) _ xt body -> PPi m (erase xt) $ erase body
+>   Binder _ InterT _ xt r -> PInterT (erase xt) $ erase r
+>   Constructor0 _ (Nat n) -> PNat n
+>   Constructor0 _ NatT -> PNatT
+>   Constructor0 _ (Sort s) -> PSort s
+>   Constructor0 _ Diamond -> PDiamond
+>   Constructor1 _ ExFalso e -> erase e
+>   Constructor1 _ Fst i -> erase i
+>   Constructor1 _ Snd i -> erase i
+>   Constructor2 _ (App ManyMode) foo bar -> PApp PManyMode (erase foo) (erase bar)
+>   Constructor2 _ (App ZeroMode) foo _ -> erase foo
+>   Constructor2 _ (App TypeMode) foo bar -> PApp PTypeMode (erase foo) (erase bar)
+>   Constructor2 p Refl _ _ -> erase $ identity p
+>   Constructor3 _ Inter l _ _ -> erase l
+>   Constructor3 _ Eq a b t -> PEq (erase a) (erase b) (erase t)
+>   Constructor3 _ Cast a _ _ -> erase a
+>   Constructor4 _ InterEq e _ _ _ -> erase e
+>   Constructor5 _ J e _ _ _ _ -> erase e
+>   -- _ -> error $ pretty term
+
+> eraseContext :: [(a, b)] -> [Maybe Pseobj]
+> eraseContext = map (const Nothing)
 
 > idx :: [a] -> Int -> Maybe a
 > idx xs i = case xs of
 >   [] -> Nothing
 >   (x:rest) -> if i == 0 then Just x else idx rest (i - 1)
 
-> eval :: [(BinderMode, Term, Maybe Term)] -> Term -> Term
+> eval :: [Maybe Pseobj] -> Pseobj -> Pseobj
 > eval gamma term = case term of
->   Ident _ _ _ i _ -> case gamma `idx` i of
->     Just (_, _, Just v) -> eval gamma v
+>   PIdent i -> case gamma `idx` i of
+>     Just (Just v) -> eval gamma v
 >     _ -> term
->   App _ _ foo bar -> case eval gamma foo of
->     Lambda p mode _ _ body -> eval ((mode, NatType p, Just bar):gamma) body -- NatType p as a dummy type, since eval doesn't depend on types
+>   PApp _ foo bar -> case eval gamma foo of
+>     PLambda body -> eval (Just bar:gamma) body
 >     _ -> term
->   Fst _ (Intersection _ l _ _ _ _) -> l
->   Snd _ (Intersection _ _ r _ _ _) -> r
 >   _ -> term
 
-> getBinderMode :: Term -> BinderMode
-> getBinderMode ty = case ty of
->   Pi _ _ _ _ body -> getBinderMode body -- this matters when we distinguish between ZeroMode and TypeMode; for now it's always ZeroMode
->   Lambda _ _ _ _ body -> getBinderMode body
+> letBinderMode :: Term -> BinderMode
+> letBinderMode ty = case ty of
 >   Ident _p bm _ _i _n -> bm
->   App _ _ foo _ -> getBinderMode foo
->   Nat _ _ -> ManyMode
->   NatType _ -> ZeroMode
->   Sort _ _ -> ZeroMode
->   Eq {} -> ZeroMode
->   Refl {} -> ManyMode
->   J {} -> ManyMode
->   IntersectionType {} -> ZeroMode
->   Intersection _ _ l _ _ _ -> getBinderMode l
->   Fst _ i -> getBinderMode i
->   Snd _ i -> getBinderMode i
->   t -> error $ "getBinderMode: " ++ show t
+>   Binder _ (Pi _) _ _ body -> letBinderMode body
+>   Binder _ (Lambda _) _ _ body -> letBinderMode body
+>   Binder _ InterT _ _ _ -> ZeroMode
+>   Constructor0 _ (Nat _) -> ManyMode
+>   Constructor0 _ NatT -> ZeroMode
+>   Constructor0 _ (Sort _) -> ZeroMode
+>   Constructor0 _ Diamond -> ZeroMode
+>   Constructor1 _ Fst i -> letBinderMode i
+>   Constructor1 _ Snd i -> letBinderMode i
+>   Constructor1 _ ExFalso _ -> ManyMode
+>   Constructor2 _ (App _) foo _ -> letBinderMode foo
+>   Constructor2 _ Refl _ _ -> ManyMode
+>   Constructor3 _ Eq _ _ _ -> ZeroMode
+>   Constructor3 _ Inter l _ _ -> letBinderMode l
+>   Constructor3 _ Cast _ _ _ -> ManyMode
+>   Constructor4 _ InterEq _ _ _ _ -> ManyMode
+>   Constructor5 _ J _ _ _ _ _ -> ManyMode
 
-> infer :: Maybe Term -> [(BinderMode, Term, Maybe Term)] -> [Term] -> Term -> Either String Term
-> infer arg gamma psi term = case term of
->   Lambda p mode x mb_xt body -> do
->     let xt = fromMaybe (head psi) mb_xt
->     _ <- infer Nothing gamma [] xt
->     let gamma2 = (mode, shift 0 xt, arg):gamma
->     body_t <- infer Nothing gamma2 (tail psi) body
->     return $ Pi p mode x xt body_t
->   App _ mode foo bar -> do
->     bar_t <- infer Nothing gamma [] bar
->     foo_t <- infer (Just bar) gamma (bar_t:psi) foo
+> funcTypeCodomain :: BinderMode -> Sort
+> funcTypeCodomain ManyMode = TypeSort
+> funcTypeCodomain TypeMode = KindSort
+> funcTypeCodomain ZeroMode = TypeSort
+
+> infer :: [(BinderMode, Term)] -> Term -> Either String Term
+> infer gamma term = case term of
+>   Constructor0 p (Sort TypeSort) -> return $ Constructor0 p (Sort KindSort)
+>   Constructor0 _ (Sort KindSort) -> undefined
+>   Ident _ _ _ i x -> do
+>     case gamma `idx` i of
+>       Just (_, t) -> do
+>         _ <- infer gamma t
+>         return t
+>       _ -> Left $ "unknown identifier `" ++ x ++ "` (" ++ show i ++ ")"
+>   Binder p (Pi mode) _ xt body -> do
+>     ak <- infer gamma xt
+>     let b_gamma = (mode, xt):gamma
+>     bk <- infer b_gamma body
+>     if True then -- termEq b_gamma bk (Constructor0 p $ Sort $ funcTypeCodomain mode) then
+>       case ak of
+>         Constructor0 _ (Sort KindSort) | mode == ManyMode ->
+>           Left "type error, many-mode functions can't return erased things"
+>         Constructor0 _ (Sort _) ->
+>           return bk
+>         _ -> Left $ "type error, domain isn't a type (it's `" ++ pretty ak ++ "`)"
+>     else Left $ "type mismatch, due to " ++ show mode ++ ", expected a codomain of kind " ++ pretty (Constructor0 p $ Sort $ funcTypeCodomain mode) ++ ", got " ++ pretty bk
+>   Binder p (Lambda mode) x xt body -> do -- TODO: check that zero-mode lambdas don't mention their parameters in unerased expressions
+>     let gamma2 = (mode, xt):gamma
+>     body_t <- infer gamma2 body
+>     let ty = Binder p (Pi mode) x xt body_t
+>     k <- infer gamma ty
+>     if True then -- termEq gamma k (Constructor0 p $ Sort $ funcTypeCodomain mode) then
+>       return ty
+>     else Left $ "type mismatch, expected a codomain of kind `" ++ pretty (Constructor0 p $ Sort $ funcTypeCodomain mode) ++ "`, got `" ++ pretty k ++ "`"
+>   Constructor2 _ (App mode) foo bar -> do
+>     bar_t <- infer gamma bar
+>     foo_t <- infer gamma foo
 >     case foo_t of
->       Pi _ mode2 _ xt body_t ->
+>       Binder _ (Pi mode2) _ xt body_t ->
 >         if mode == mode2 then do
 >           if termEq gamma xt bar_t then
->               return $ subst body_t 0 bar
+>               return $ dec $ subst body_t 0 $ inc bar
 >           else Left $ "type mismatch, expected " ++ pretty xt ++ ", got " ++ pretty bar_t
 >         else Left $ "mode mismatch, expected " ++ show mode2 ++ ", got " ++ show mode
 >       _ -> Left $ "expected function, got " ++ pretty foo_t
->   Pi p mode _ xt body -> do
->     _ <- infer Nothing gamma [] xt
->     _ <- infer arg ((mode, xt, arg):map (\(a,b,c)->(a,shift 0 b,c)) gamma) [] body
->     return $ Sort p TypeSort -- TODO: should be sortOf body_t
->   NatType p -> return $ Sort p TypeSort
->   Sort p _ -> return $ Sort p KindSort
->   Nat p _ -> return $ NatType p
->   Ident _ _ _ i _ -> let (_, t, _) = gamma !! i in return t
->   J p eq a b c predicate -> do
->     eq_t <- infer Nothing gamma [] eq
->     a_t <- infer Nothing gamma [] a
->     b_t <- infer Nothing gamma [] b
+>   Constructor0 p NatT -> return $ Constructor0 p (Sort TypeSort)
+>   Constructor0 p (Nat _) -> return $ Constructor0 p NatT
+>   Binder p InterT _x a b -> do
+>     ak <- infer gamma a
+>     let b_gamma = (ZeroMode,a):gamma
+>     bk <- infer b_gamma b
+>     if termEq gamma ak (Constructor0 p $ Sort TypeSort) && termEq b_gamma bk (Constructor0 p $ Sort TypeSort) then do
+>       return $ Constructor0 p (Sort TypeSort)
+>      else Left $ "type mismatch, expected two types for the intersection type, got `" ++ pretty ak ++ "` and `" ++ pretty bk ++ "`"
+>   Constructor3 _ Inter l r t -> do
+>     l_t <- infer gamma l
+>     let l2 = inc l
+>     r_t <- infer gamma $ dec $ subst r 0 l2
+>     _ <- infer gamma t
+>     if termEq gamma l2 r then
+>       case t of
+>         Binder _ InterT x l_t_2 r_t_2 ->
+>           if termEq gamma l_t l_t_2 && termEq gamma (dec $ subst r_t 0 l2) (dec $ subst r_t_2 0 l2) then
+>             return t
+>           else Left $ "type mismatch, Intersection equatees don't match type annotation (`(" ++ x ++ ": " ++ pretty l_t ++ ")&(" ++ pretty r_t ++ ")` should convert to `(" ++ x ++ ": " ++ pretty l_t_2 ++ ")&(" ++ pretty r_t_2 ++ ")`)"
+>         _ -> Left $ "type error, Intersections must be given intersection types (`" ++ pretty t ++ "` might not be an intersection type)"
+>     else Left $ "type mismatch, Intersection equatees aren't definitionally equal (`" ++ pretty l ++ "` != `" ++ pretty r ++ "`)"
+>   Constructor1 _ Fst i -> do
+>     i_t <- infer gamma i
+>     case i_t of
+>       Binder _ InterT _ l _ -> return l
+>       _ -> Left $ "type error, Fst argument must be an intersection, but instead it is `" ++ pretty i ++ ": " ++ pretty i_t ++ "`"
+>   Constructor1 p Snd i -> do
+>     i_t <- infer gamma i
+>     case i_t of
+>       Binder _ InterT _ _ r -> return $ dec $ subst r 0 (Constructor1 p Fst $ inc i)
+>       _ -> Left $ "type error, Snd argument must be an intersection, but instead has type `" ++ pretty i_t ++ "`"
+>   Constructor5 p J eq a b c predicate -> do
+>     eq_t <- infer gamma eq
+>     a_t <- infer gamma a
+>     b_t <- infer gamma b
 >     if termEq gamma a_t b_t then
 >       case eq_t of
->         Eq _ l r t | termEq gamma a l && termEq gamma b r && termEq gamma a_t t -> do
+>         Constructor3 _ Eq l r t | termEq gamma a l && termEq gamma b r && termEq gamma a_t t -> do
 >           if termEq gamma c t then do
->             pred_t <- infer Nothing gamma [] predicate
+>             pred_t <- infer gamma predicate
 >             case pred_t of
->               Pi _ ZeroMode var_name param_t (Pi _ ZeroMode _var2_name (Eq _ l2 r2 t2) (Sort _ TypeSort)) | termEq gamma param_t t && termEq gamma a l2 && termEq gamma (Ident p ZeroMode TypeSort 0 var_name) r2 && termEq gamma t t2-> do
->                 return $ Pi p ManyMode "_" (App p ZeroMode (App p ZeroMode predicate a) (Refl p a t)) (App p ZeroMode (App p ZeroMode predicate b) eq)
+>               Binder _ (Pi ZeroMode) var_name param_t (Binder _ (Pi ZeroMode) _var2_name (Constructor3 _ Eq l2 r2 t2) (Constructor0 _ (Sort TypeSort))) | termEq gamma param_t t && termEq gamma (inc a) l2 && termEq gamma (Ident p ZeroMode TypeSort 0 var_name) r2 && termEq gamma (inc t) t2-> do
+>                 return $ Binder p (Pi ManyMode) "_" (Constructor2 p (App ZeroMode) (Constructor2 p (App ZeroMode) predicate a) (Constructor2 p Refl a t)) (Constructor2 p (App ZeroMode) (Constructor2 p (App ZeroMode) (inc predicate) (inc b)) $ inc eq)
+>               Binder _ (Pi ZeroMode) var_name param_t (Binder _ (Pi ZeroMode) _var2_name (Constructor3 _ Eq l2 r2 t2) (Constructor0 _ (Sort TypeSort))) ->
+>                 Left $ "param_t = t: " ++ show (termEq gamma param_t t) ++ ", a = l2: " ++ show (termEq gamma (inc a) l2) ++ " (" ++ pretty (inc a) ++ ", " ++ pretty l2 ++ "), " ++ var_name ++ " = r2: " ++ show (termEq gamma (Ident p ZeroMode TypeSort 0 var_name) r2) ++ ", t = t2: " ++ show (termEq gamma (inc t) t2)
 >               _ -> Left $ "type error, the predicate of J has an invalid type (`" ++ pretty pred_t ++ "`)"   
 >           else Left $ "type error, the fourth argument of J must be the type of the first two arguments (`" ++ pretty t ++ "` != `" ++ pretty c ++ "`)"
 >         _ -> Left $ "type error, the first three arguments of J don't form a valid equation (`" ++ pretty eq_t ++ "`, `" ++ pretty a_t ++ "`, `" ++ pretty b_t ++ "`)"
 >     else Left $ "type mismatch, J equatees must have the same type (`" ++ pretty a_t ++ "` and `" ++ pretty b_t ++ "` are not equal)"
->   Eq p l r t -> do
->     l_t <- infer Nothing gamma [] l
->     r_t <- infer Nothing gamma [] r
+>   Constructor3 p Eq l r t -> do
+>     l_t <- infer gamma l
+>     r_t <- infer gamma r
 >     if termEq gamma l_t r_t && termEq gamma l_t t then
->       return $ Sort p TypeSort
+>       return $ Constructor0 p (Sort TypeSort)
 >     else Left $ "type mismatch, Eq equatees must have the same type (`" ++ pretty l_t ++ "` and `" ++ pretty r_t ++ "` should convert to `" ++ pretty t ++ "`)"
->   Refl p a t -> do
->     a_t <- infer Nothing gamma [] a
+>   Constructor2 p Refl a t -> do
+>     a_t <- infer gamma a
 >     if termEq gamma a_t t then
->       return $ Eq p a a t
+>       return $ Constructor3 p Eq a a t
 >     else Left $ "type mismatch, Refl first argument must have second argument as type (`" ++ pretty a_t ++ "` != `" ++ pretty t ++ "`)"
->   IntersectionType p _x a b -> do
->     _ <- infer Nothing gamma [] a
->     _ <- infer Nothing ((ZeroMode,a,Nothing):gamma) [] b
->     return $ Sort p TypeSort
->   Intersection p l r x l_t_2 r_t_2 -> 
->     if termEq gamma l r then do
->       l_t <- infer Nothing gamma [] l
->       r_t <- infer Nothing ((ZeroMode,l_t,Just l):gamma) [] r
->       _ <- infer Nothing gamma [] $ IntersectionType p x l_t_2 r_t_2
->       if termEq gamma l_t l_t_2 && termEq ((ZeroMode,l_t,Just l):gamma) r_t r_t_2 then
->         return $ IntersectionType p x l_t_2 r_t_2
->       else Left $ "type mismatch, Intersection equatees don't match type annotation (`&" ++ x ++ ": " ++ pretty l_t ++ ". " ++ pretty r_t ++ "` should convert to `&" ++ x ++ ": " ++ pretty l_t_2 ++ ". " ++ pretty r_t_2 ++ "`)"
->     else Left $ "type mismatch, Intersection equatees aren't definitionally equal (`" ++ pretty l ++ "` != `" ++ pretty r ++ "`)"
->   Fst _ i -> do
->     i_t <- infer Nothing gamma [] i
->     case i_t of
->       IntersectionType _ _ l _ -> return l
->       _ -> Left $ "type error, Fst argument must be an intersection, but instead has type `" ++ pretty i_t ++ "`"
->   Snd _ i -> do
->     i_t <- infer Nothing gamma [] i
->     case i_t of
->       IntersectionType _ _ _ r -> return $ subst r 0 i
->       _ -> Left $ "type error, Snd argument must be an intersection, but instead has type `" ++ pretty i_t ++ "`"
 >   _ -> undefined
 
 > captures :: [Int] -> Int -> Term -> Set.Set Int
 > captures caps depth t = case t of
->   Lambda _ _ _ _ body -> Set.map (\n->n-1) $ captures caps (depth + 1) body
+>   Binder _ (Lambda _) _ _ body -> Set.map (\n->n-1) $ captures caps (depth + 1) body
 >   Ident _ _ _ i _ ->
 >     if i < depth then Set.empty else Set.singleton i
->   App _ ManyMode foo bar -> captures caps depth foo `Set.union` captures caps depth bar
->   App _ ZeroMode foo _bar -> captures caps depth foo
->   Intersection _ l _ _ _ _ -> captures caps depth l
->   Fst _ i -> captures caps depth i
->   Snd _ i -> captures caps depth i
+>   Constructor2 _ (App ManyMode) foo bar -> captures caps depth foo `Set.union` captures caps depth bar
+>   Constructor2 _ (App ZeroMode) foo _bar -> captures caps depth foo
+>   Constructor3 _ Inter l _ _ -> captures caps depth l
+>   Constructor1 _ Fst i -> captures caps depth i
+>   Constructor1 _ Snd i -> captures caps depth i
 >   _ -> Set.empty
 
 > lamOp :: Int -> [Word8]
@@ -906,24 +980,24 @@
 
 > codegen :: [Int] -> [Int] -> Term -> [Word8]
 > codegen caps kcaps t = case t of
->   Lambda _ ManyMode _ _ body -> 
+>   Binder _ (Lambda ManyMode) _ _ body -> 
 >     let body_caps = Set.toAscList $ captures [] 1 body in
 >     let body_cap_indices = map (\n->fromMaybe (-1) (elemIndex (n-1) caps) + 1) body_caps in
 >     let body_ops = codegen body_caps kcaps body in
 >     concatMap capOp (reverse body_cap_indices) ++ lamOp (length body_ops + 1) ++ body_ops ++ retOp
->   Lambda _ ZeroMode _ _ body -> codegen caps kcaps body
+>   Binder _ (Lambda ZeroMode) _ _ body -> codegen caps kcaps body
 >   Ident _ _ _ i _ ->
 >     case elemIndex i caps of
 >       Just index -> varOp (index + 1)
 >       Nothing -> varOp 0
->   App _ ManyMode foo bar -> 
+>   Constructor2 _ (App ManyMode) foo bar -> 
 >     let bar_caps = Set.toAscList $ captures [] 0 bar in
 >     codegen caps bar_caps foo ++ codegen caps kcaps bar ++ concatMap capOp kcaps ++ appOp
->   App _ ZeroMode foo _bar -> codegen caps kcaps foo
->   Nat _ n -> litOp n
->   J {} -> lamOp 3 ++ varOp 0 ++ retOp -- J compiles to the unerased identity function
->   Refl {} -> lamOp 3 ++ varOp 0 ++ retOp -- Refl compiles to the unerased identity function
->   Intersection  _ l _ _ _ _ -> codegen caps kcaps l
->   Fst _ i -> codegen caps kcaps i
->   Snd _ i -> codegen caps kcaps i
+>   Constructor2 _ (App ZeroMode) foo _bar -> codegen caps kcaps foo
+>   Constructor0 _ (Nat n) -> litOp n
+>   Constructor5 _ J _ _ _ _ _ -> lamOp 3 ++ varOp 0 ++ retOp -- J compiles to the unerased identity function
+>   Constructor2 _ Refl _ _ -> lamOp 3 ++ varOp 0 ++ retOp -- Refl compiles to the unerased identity function
+>   Constructor3 _ Inter l _ _ -> codegen caps kcaps l
+>   Constructor1 _ Fst i -> codegen caps kcaps i
+>   Constructor1 _ Snd i -> codegen caps kcaps i
 >   _ -> undefined
