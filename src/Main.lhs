@@ -16,35 +16,62 @@
 > import System.Process (system)
 > import Control.Monad (when)
 > import Control.Arrow (second)
+> import System.Environment (getArgs)
 > import Debug.Trace (trace)
 
 > main :: IO ()
 > main = do
->   putStr "> "
->   hFlush stdout
->   src <- getLine
->   when (src /= "q") $ do
->     let pos = Pos "input" 1 1
->     case run parseTerm Nothing pos src of
->       Left err -> putStrLn err
->       Right (t, _, "") -> do
->         let res = translate 0 Map.empty [] t
->         case res of
+>   args <- getArgs
+>   case args of
+>     [] -> do
+>       putStr "> "
+>       hFlush stdout
+>       src <- getLine
+>       when (src /= "q") $ do
+>         let pos = Pos "input" 1 1
+>         case run parseTerm Nothing pos src of
 >           Left err -> putStrLn err
->           Right t2 -> do
->             case infer [] t2 of
+>           Right (t, _, "") -> do
+>             let res = translate 0 Map.empty [] t
+>             case res of
 >               Left err -> putStrLn err
->               Right _t3 -> do
->                 let bytecode = codegen [] [] t2 ++ [29, 0]
->                 h_out <- openFile "bin.fvm" WriteMode
->                 B.hPut h_out $ B.pack bytecode
->                 hClose h_out
->                 _ <- system "vendor/fvm bin.fvm"
->                 return ()
->       Right (_, p, c:_) ->
->         putStrLn $
->           prettyParseError p Nothing $ "unexpected `" ++ c:"`"
->     main
+>               Right t2 -> do
+>                 case infer [] t2 of
+>                   Left err -> putStrLn err
+>                   Right _t3 -> do
+>                     let bytecode = codegen [] [] t2 ++ [29, 0]
+>                     h_out <- openFile "bin.fvm" WriteMode
+>                     B.hPut h_out $ B.pack bytecode
+>                     hClose h_out
+>                     _ <- system "vendor/fvm bin.fvm"
+>                     return ()
+>           Right (_, p, c:_) ->
+>             putStrLn $
+>               prettyParseError p Nothing $ "unexpected `" ++ c:"`"
+>         main
+>     filename:_ -> do
+>       let pos = Pos filename 1 1
+>       src <- readFile filename
+>       case run parseTerm Nothing pos src of
+>         Left err -> putStrLn err
+>         Right (t, _, "") -> do
+>           let res = translate 0 Map.empty [] t
+>           case res of
+>             Left err ->
+>               putStrLn err
+>             Right t2 -> do
+>               case infer [] t2 of
+>                 Left err -> putStrLn err
+>                 Right _t3 -> do
+>                   let bytecode = codegen [] [] t2 ++ [29, 0]
+>                   h_out <- openFile "bin.fvm" WriteMode
+>                   B.hPut h_out $ B.pack bytecode
+>                   hClose h_out
+>                   _ <- system "vendor/fvm bin.fvm"
+>                   return ()
+>         Right (_, p, c:_) ->
+>           putStrLn $
+>             prettyParseError p Nothing $ "unexpected `" ++ c:"`"
 
 > data Pos = Pos String Int Int deriving Show
 
@@ -169,7 +196,7 @@
 
 > instance Pretty Term where
 >   pretty t = case t of
->     Ident _ _ _ i x -> x ++ show i
+>     Ident _ _ _ _ x -> x
 >     Binder _ (Lambda ManyMode) x ty e -> "(" ++ x ++ ": " ++ pretty ty ++ ")-> " ++ pretty e
 >     Binder _ (Lambda ZeroMode) x ty e -> "<" ++ x ++ ": " ++ pretty ty ++ ">-> " ++ pretty e
 >     Binder _ (Lambda TypeMode) x ty e -> "{" ++ x ++ ": " ++ pretty ty ++ "}-> " ++ pretty e
@@ -348,7 +375,7 @@
 >     case mb_params of
 >       Just params -> do
 >         _ <- char '='
->         return (i, Basic, params, t)
+>         return (i, Basic, params, buildPi p params t)
 >       Nothing -> do
 >         op <- oneOf [exact "=", exact "<-"]
 >         case op of
@@ -532,6 +559,20 @@
 >     '2' -> return $ SndSyntax p i
 >     _ -> error "internal error"
 
+> parseCast :: Parser Syntax
+> parseCast = do
+>   p <- position
+>   _ <- exact "cast"
+>   _ <- whitespace0
+>   _ <- char '('
+>   a <- parseTerm
+>   _ <- char ','
+>   b <- parseTerm
+>   _ <- char ','
+>   t <- parseTerm
+>   _ <- char ')'
+>   return $ CastSyntax p a b t
+
 > parseTermNoPostfix :: Parser Syntax
 > parseTermNoPostfix = do
 >   _ <- whitespace0
@@ -549,6 +590,7 @@
 >     , parseKindSort
 >     , parseJ
 >     , parseRefl
+>     , parseCast
 >     , parseIdent
 >     ]
 >   _ <- whitespace0
@@ -760,6 +802,11 @@
 >     SndSyntax p a -> do
 >       a2 <- tr index renames psi a
 >       return $ Constructor1 p Snd a2
+>     CastSyntax p a b ty -> do
+>       a2 <- tr index renames psi a
+>       b2 <- tr index renames psi b
+>       ty2 <- tr index renames psi ty
+>       return $ Constructor3 p Cast a2 b2 ty2
 >     _ -> undefined
 
 > shift :: Int -> Int -> Term -> Term
@@ -986,6 +1033,17 @@
 >     if termEq gamma a_t t then
 >       return $ Constructor3 p Eq a a t
 >     else Left $ "type mismatch, Refl first argument must have second argument as type (`" ++ pretty a_t ++ "` != `" ++ pretty t ++ "`)"
+>   Constructor3 p Cast a b eq -> do
+>     a_t <- infer gamma a
+>     b_t <- infer gamma b
+>     case b_t of
+>       Binder _ InterT _ l _ | termEq gamma a_t l -> do
+>         eq_t <- infer gamma eq
+>         case eq_t of
+>           Constructor3 _ Eq l2 r2 t2 | termEq gamma a l2 && termEq gamma (Constructor1 p Fst b) r2 && termEq gamma a_t t2 -> do
+>             return b_t
+>           _ -> Left $ "type error, Cast third argument must be an equation (but it's a `" ++ pretty eq_t ++ "`)"
+>       _ -> Left $ "type error, Cast second argument must be an intersection, but instead has type `" ++ pretty b_t ++ "`"
 >   _ -> undefined
 
 > captures :: [Int] -> Int -> Term -> Set.Set Int
