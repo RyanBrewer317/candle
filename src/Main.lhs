@@ -104,17 +104,20 @@
 > instance Pretty Syntax where
 >   pretty stx = case stx of
 >     LambdaSyntax _ ManyMode x t e -> "(" ++ x ++ ": " ++ pretty t ++ ")-> " ++ pretty e
->     LambdaSyntax _ _ x t e -> "<" ++ x ++ ": " ++ pretty t ++ ">-> " ++ pretty e
+>     LambdaSyntax _ ZeroMode x t e -> "<" ++ x ++ ": " ++ pretty t ++ ">-> " ++ pretty e
+>     LambdaSyntax _ TypeMode x t e -> "{" ++ x ++ ": " ++ pretty t ++ "}-> " ++ pretty e
 >     IdentSyntax _ s -> s
 >     AppSyntax _ ManyMode f a -> "(" ++ pretty f ++ ")(" ++ pretty a ++ ")"
->     AppSyntax _ _ f a -> "(" ++ pretty f ++ ")<" ++ pretty a ++ ">"
+>     AppSyntax _ ZeroMode f a -> "(" ++ pretty f ++ ")<" ++ pretty a ++ ">"
+>     AppSyntax _ TypeMode f a -> "(" ++ pretty f ++ "){" ++ pretty a ++ "}"
 >     ImmediateAppSyntax _ x params t v e -> "let " ++ x ++ prettyParams params ++ ": " ++ pretty t ++ " = " ++ pretty v ++ " in " ++ pretty e
 >     NatSyntax _ n -> show n
 >     NatTypeSyntax _ -> "Nat"
 >     SortSyntax _ TypeSort -> "Type"
 >     SortSyntax _ KindSort -> "Kind"
 >     PiSyntax _ ManyMode x t e -> "(" ++ x ++ ": " ++ pretty t ++ ")=> " ++ pretty e
->     PiSyntax _ _ x t e -> "<" ++ x ++ ": " ++ pretty t ++ ">=> " ++ pretty e
+>     PiSyntax _ ZeroMode x t e -> "<" ++ x ++ ": " ++ pretty t ++ ">=> " ++ pretty e
+>     PiSyntax _ TypeMode x t e -> "{" ++ x ++ ": " ++ pretty t ++ "}=> " ++ pretty e
 >     JSyntax _ a b c d e -> "J(" ++ pretty a ++ ", " ++ pretty b ++ ", " ++ pretty c ++ ", " ++ pretty d ++ ", " ++ pretty e ++ ")"
 >     IntersectionTypeSyntax _ x t e -> "(" ++ x ++ ": " ++ pretty t ++ ")&" ++ pretty e
 >     IntersectionSyntax p a b x xt r -> "[" ++ pretty a ++ ", " ++ pretty b ++ "; " ++ pretty (IntersectionTypeSyntax p x xt r) ++ "]"
@@ -166,14 +169,14 @@
 >   pretty t = case t of
 >     Ident _ _ _ i x -> x ++ show i
 >     Binder _ (Lambda ManyMode) x ty e -> "(" ++ x ++ ": " ++ pretty ty ++ ")-> " ++ pretty e
->     Binder _ (Lambda ZeroMode) x ty e -> "{" ++ x ++ ": " ++ pretty ty ++ "}-> " ++ pretty e
->     Binder _ (Lambda TypeMode) x ty e -> "<" ++ x ++ ": " ++ pretty ty ++ ">-> " ++ pretty e
+>     Binder _ (Lambda ZeroMode) x ty e -> "<" ++ x ++ ": " ++ pretty ty ++ ">-> " ++ pretty e
+>     Binder _ (Lambda TypeMode) x ty e -> "{" ++ x ++ ": " ++ pretty ty ++ "}-> " ++ pretty e
 >     Binder _ (Pi ManyMode) "_" a b -> "(" ++ pretty a ++ ")=> " ++ pretty b
 >     Binder _ (Pi ManyMode) x ty e -> "(" ++ x ++ ": " ++ pretty ty ++ ")=> " ++ pretty e
->     Binder _ (Pi ZeroMode) "_" a b -> "{" ++ pretty a ++ "}=> " ++ pretty b
->     Binder _ (Pi ZeroMode) x ty e -> "{" ++ x ++ ": " ++ pretty ty ++ "}=> " ++ pretty e
->     Binder _ (Pi TypeMode) "_" a b -> "<" ++ pretty a ++ ">=> " ++ pretty b
->     Binder _ (Pi TypeMode) x ty e -> "<" ++ x ++ ": " ++ pretty ty ++ ">=> " ++ pretty e
+>     Binder _ (Pi ZeroMode) "_" a b -> "<" ++ pretty a ++ ">=> " ++ pretty b
+>     Binder _ (Pi ZeroMode) x ty e -> "<" ++ x ++ ": " ++ pretty ty ++ ">=> " ++ pretty e
+>     Binder _ (Pi TypeMode) "_" a b -> "{" ++ pretty a ++ "}=> " ++ pretty b
+>     Binder _ (Pi TypeMode) x ty e -> "{" ++ x ++ ": " ++ pretty ty ++ "}=> " ++ pretty e
 >     Binder _ InterT x ty e -> "(" ++ x ++ ": " ++ pretty ty ++ ")&(" ++ pretty e ++ ")"
 >     Constructor0 _ Diamond -> "<>"
 >     Constructor0 _ (Sort TypeSort) -> "Type"
@@ -184,8 +187,8 @@
 >     Constructor1 _ Snd a -> ".2(" ++ pretty a ++ ")"
 >     Constructor1 _ ExFalso a -> "exfalso(" ++ pretty a ++ ")"
 >     Constructor2 _ (App ManyMode) foo bar -> "(" ++ pretty foo ++ ")(" ++ pretty bar ++ ")"
->     Constructor2 _ (App ZeroMode) foo bar -> "(" ++ pretty foo ++ "){" ++ pretty bar ++ "}"
->     Constructor2 _ (App TypeMode) foo bar -> "(" ++ pretty foo ++ ")<" ++ pretty bar ++ ">"
+>     Constructor2 _ (App ZeroMode) foo bar -> "(" ++ pretty foo ++ ")<" ++ pretty bar ++ ">"
+>     Constructor2 _ (App TypeMode) foo bar -> "(" ++ pretty foo ++ "){" ++ pretty bar ++ "}"
 >     Constructor2 _ Refl a ty -> "refl(" ++ pretty a ++ ", " ++ pretty ty ++ ")"
 >     Constructor3 _ Inter a b ty -> "[" ++ pretty a ++ ", " ++ pretty b ++ "; " ++ pretty ty ++ "]"
 >     Constructor3 _ Eq a b ty -> "(" ++ pretty a ++ ") =[" ++ pretty ty ++ "] (" ++ pretty b ++ ")"
@@ -439,6 +442,24 @@
 >     "=>" -> return $ PiSyntax p ZeroMode x t right
 >     _ -> error "internal error"
 
+> parseAbstractType :: Parser Syntax
+> parseAbstractType = do
+>   p <- position
+>   _ <- char '{'
+>   _ <- whitespace0
+>   x <- patternString
+>   _ <- whitespace0
+>   _ <- char ':'
+>   t <- parseTerm
+>   _ <- char '}'
+>   _ <- whitespace0
+>   res2 <- oneOf [exact "->", exact "=>"]
+>   right <- parseTerm
+>   case res2 of
+>     "->" -> return $ LambdaSyntax p TypeMode x t right
+>     "=>" -> return $ PiSyntax p TypeMode x t right
+>     _ -> error "internal error"
+
 > parseJ :: Parser Syntax
 > parseJ = do
 >   p <- position
@@ -515,6 +536,7 @@
 >   t <- oneOf
 >     [ parseParens
 >     , parseErased
+>     , parseAbstractType
 >     , parseIntersectionType
 >     , parseIntersection
 >     , parseProjection
@@ -532,6 +554,7 @@
 
 > data Postfix = AppPostfix Pos Syntax
 >              | ErasedAppPostfix Pos Syntax
+>              | AbstractTypeAppPostfix Pos Syntax
 > --           | MonoidPostfix Pos [Syntax]
 >              | ApostrophePostfix Pos Syntax
 >              | EqTypePostfix Pos Syntax Syntax
@@ -554,6 +577,12 @@
 >       arg <- parseTerm
 >       _ <- char '>'
 >       return $ ErasedAppPostfix p2 arg
+>     , do
+>       p2 <- position
+>       _ <- char '{'
+>       arg <- parseTerm
+>       _ <- char '}'
+>       return $ AbstractTypeAppPostfix p2 arg
 >     {- , do
 >       p2 <- position
 >       _ <- char '['
@@ -587,6 +616,7 @@
 >         _ -> foldl' (\b a-> case a of
 >             AppPostfix p2 arg -> AppSyntax p2 ManyMode b arg
 >             ErasedAppPostfix p2 arg -> AppSyntax p2 ZeroMode b arg
+>             AbstractTypeAppPostfix p2 arg -> AppSyntax p2 TypeMode b arg
 >             {- MonoidPostfix p2 terms ->
 >               foldr (\term so_far->
 >                   AppSyntax p2
@@ -605,7 +635,7 @@
 
 > parseParams :: Parser [(BinderMode, String, Syntax)]
 > parseParams = many $ do
->     res <- oneOf [char '(', char '<']
+>     res <- oneOf [char '(', char '<', char '{']
 >     _ <- whitespace0
 >     param <- patternString
 >     _ <- whitespace0
@@ -619,6 +649,10 @@
 >         t <- parseTerm
 >         _ <- char '>'
 >         return (ZeroMode, param, t)
+>       '{' -> do
+>         t <- parseTerm
+>         _ <- char '}'
+>         return (TypeMode, param, t)
 >       _ -> error "internal error"
 
 > parseDecl :: Parser (Either (String, (Syntax, Syntax)) [String])
@@ -932,10 +966,10 @@
 >           if termEq gamma c t then do
 >             pred_t <- infer gamma predicate
 >             case pred_t of
->               Binder _ (Pi ZeroMode) var_name param_t (Binder _ (Pi ZeroMode) _var2_name (Constructor3 _ Eq l2 r2 t2) (Constructor0 _ (Sort TypeSort))) | termEq gamma param_t t && termEq gamma (inc a) l2 && termEq gamma (Ident p ZeroMode TypeSort 0 var_name) r2 && termEq gamma (inc t) t2-> do
->                 return $ Binder p (Pi ManyMode) "_" (Constructor2 p (App ZeroMode) (Constructor2 p (App ZeroMode) predicate a) (Constructor2 p Refl a t)) (Constructor2 p (App ZeroMode) (Constructor2 p (App ZeroMode) (inc predicate) (inc b)) $ inc eq)
->               Binder _ (Pi ZeroMode) var_name param_t (Binder _ (Pi ZeroMode) _var2_name (Constructor3 _ Eq l2 r2 t2) (Constructor0 _ (Sort TypeSort))) ->
->                 Left $ "param_t = t: " ++ show (termEq gamma param_t t) ++ ", a = l2: " ++ show (termEq gamma (inc a) l2) ++ " (" ++ pretty (inc a) ++ ", " ++ pretty l2 ++ "), " ++ var_name ++ " = r2: " ++ show (termEq gamma (Ident p ZeroMode TypeSort 0 var_name) r2) ++ ", t = t2: " ++ show (termEq gamma (inc t) t2)
+>               Binder _ (Pi TypeMode) var_name param_t (Binder _ (Pi TypeMode) _var2_name (Constructor3 _ Eq l2 r2 t2) (Constructor0 _ (Sort TypeSort))) | termEq gamma param_t t && termEq gamma (inc a) l2 && termEq gamma (Ident p TypeMode TypeSort 0 var_name) r2 && termEq gamma (inc t) t2-> do
+>                 return $ Binder p (Pi TypeMode) "_" (Constructor2 p (App TypeMode) (Constructor2 p (App TypeMode) predicate a) (Constructor2 p Refl a t)) (Constructor2 p (App TypeMode) (Constructor2 p (App TypeMode) (inc predicate) (inc b)) $ inc eq)
+>               Binder _ (Pi TypeMode) var_name param_t (Binder _ (Pi TypeMode) _var2_name (Constructor3 _ Eq l2 r2 t2) (Constructor0 _ (Sort TypeSort))) ->
+>                 Left $ "param_t = t: " ++ show (termEq gamma param_t t) ++ ", a = l2: " ++ show (termEq gamma (inc a) l2) ++ " (" ++ pretty (inc a) ++ ", " ++ pretty l2 ++ "), " ++ var_name ++ " = r2: " ++ show (termEq gamma (Ident p TypeMode TypeSort 0 var_name) r2) ++ ", t = t2: " ++ show (termEq gamma (inc t) t2)
 >               _ -> Left $ "type error, the predicate of J has an invalid type (`" ++ pretty pred_t ++ "`)"   
 >           else Left $ "type error, the fourth argument of J must be the type of the first two arguments (`" ++ pretty t ++ "` != `" ++ pretty c ++ "`)"
 >         _ -> Left $ "type error, the first three arguments of J don't form a valid equation (`" ++ pretty eq_t ++ "`, `" ++ pretty a_t ++ "`, `" ++ pretty b_t ++ "`)"
