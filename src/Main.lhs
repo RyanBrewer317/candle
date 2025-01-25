@@ -15,6 +15,8 @@
 > import qualified Data.Set as Set
 > import System.Process (system)
 > import Control.Monad (when)
+> import Control.Arrow (second)
+> import Debug.Trace (trace)
 
 > main :: IO ()
 > main = do
@@ -854,6 +856,7 @@
 >     _ -> term
 >   PApp _ foo bar -> case eval gamma foo of
 >     PLambda body -> eval (Just bar:gamma) body
+>     PTyLambda _ body -> eval (Just bar:gamma) body
 >     _ -> term
 >   _ -> term
 
@@ -889,13 +892,11 @@
 >   Constructor0 _ (Sort KindSort) -> undefined
 >   Ident _ _ _ i x -> do
 >     case gamma `idx` i of
->       Just (_, t) -> do
->         _ <- infer gamma t
->         return t
+>       Just (_, t) -> return t
 >       _ -> Left $ "unknown identifier `" ++ x ++ "` (" ++ show i ++ ")"
 >   Binder p (Pi mode) _ xt body -> do
 >     ak <- infer gamma xt
->     let b_gamma = (mode, xt):gamma
+>     let b_gamma = (mode, inc xt):map (second inc) gamma
 >     bk <- infer b_gamma body
 >     if True then -- termEq b_gamma bk (Constructor0 p $ Sort $ funcTypeCodomain mode) then
 >       case ak of
@@ -906,7 +907,7 @@
 >         _ -> Left $ "type error, domain isn't a type (it's `" ++ pretty ak ++ "`)"
 >     else Left $ "type mismatch, due to " ++ show mode ++ ", expected a codomain of kind " ++ pretty (Constructor0 p $ Sort $ funcTypeCodomain mode) ++ ", got " ++ pretty bk
 >   Binder p (Lambda mode) x xt body -> do -- TODO: check that zero-mode lambdas don't mention their parameters in unerased expressions
->     let gamma2 = (mode, xt):gamma
+>     let gamma2 = (mode, inc xt):map (second inc) gamma
 >     body_t <- infer gamma2 body
 >     let ty = Binder p (Pi mode) x xt body_t
 >     k <- infer gamma ty
@@ -928,7 +929,7 @@
 >   Constructor0 p (Nat _) -> return $ Constructor0 p NatT
 >   Binder p InterT _x a b -> do
 >     ak <- infer gamma a
->     let b_gamma = (ZeroMode,a):gamma
+>     let b_gamma = (ZeroMode, inc a):map (second inc) gamma
 >     bk <- infer b_gamma b
 >     if termEq gamma ak (Constructor0 p $ Sort TypeSort) && termEq b_gamma bk (Constructor0 p $ Sort TypeSort) then do
 >       return $ Constructor0 p (Sort TypeSort)
@@ -967,7 +968,7 @@
 >             pred_t <- infer gamma predicate
 >             case pred_t of
 >               Binder _ (Pi TypeMode) var_name param_t (Binder _ (Pi TypeMode) _var2_name (Constructor3 _ Eq l2 r2 t2) (Constructor0 _ (Sort TypeSort))) | termEq gamma param_t t && termEq gamma (inc a) l2 && termEq gamma (Ident p TypeMode TypeSort 0 var_name) r2 && termEq gamma (inc t) t2-> do
->                 return $ Binder p (Pi TypeMode) "_" (Constructor2 p (App TypeMode) (Constructor2 p (App TypeMode) predicate a) (Constructor2 p Refl a t)) (Constructor2 p (App TypeMode) (Constructor2 p (App TypeMode) (inc predicate) (inc b)) $ inc eq)
+>                 return $ Binder p (Pi ManyMode) "_" (Constructor2 p (App TypeMode) (Constructor2 p (App TypeMode) predicate a) (Constructor2 p Refl a t)) (Constructor2 p (App TypeMode) (Constructor2 p (App TypeMode) (inc predicate) (inc b)) $ inc eq)
 >               Binder _ (Pi TypeMode) var_name param_t (Binder _ (Pi TypeMode) _var2_name (Constructor3 _ Eq l2 r2 t2) (Constructor0 _ (Sort TypeSort))) ->
 >                 Left $ "param_t = t: " ++ show (termEq gamma param_t t) ++ ", a = l2: " ++ show (termEq gamma (inc a) l2) ++ " (" ++ pretty (inc a) ++ ", " ++ pretty l2 ++ "), " ++ var_name ++ " = r2: " ++ show (termEq gamma (Ident p TypeMode TypeSort 0 var_name) r2) ++ ", t = t2: " ++ show (termEq gamma (inc t) t2)
 >               _ -> Left $ "type error, the predicate of J has an invalid type (`" ++ pretty pred_t ++ "`)"   
