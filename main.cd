@@ -1,5 +1,5 @@
-let t: <t:Type>=>t=>t=>t = <t:Type>->(x:t)->(y:t)->x in 
-let test1: Nat = t<Nat>(2)(3) in
+let t: {t:Type}=>t=>t=>t = {t:Type}->(x:t)->(y:t)->x in 
+let test1: Nat = t{Nat}(2)(3) in
 
 let x: (f: Nat=>Nat) & (f =[Nat=>Nat] (m: Nat)-> m) = [
     (n: Nat)-> n,
@@ -7,14 +7,14 @@ let x: (f: Nat=>Nat) & (f =[Nat=>Nat] (m: Nat)-> m) = [
     (f: Nat=>Nat) & (f =[Nat=>Nat] (m: Nat)-> m)
 ] in 
 let test2: Nat = J(.2(x), .1(x), (r: Nat)-> r; Nat=>Nat, 
-    {y: Nat=>Nat}-> {p: .1(x) =[Nat=>Nat] y}-> Nat
+    <y: Nat=>Nat>-> <p: .1(x) =[Nat=>Nat] y>-> Nat
 )(4) in
 
-let mycast{a: Type}{b: Type}: Type = (f: a => (a & b)) & (<x: a>=> x =[a] .1(f(x))) in
-let mycast_irrel<a: Type><b: Type><k: mycast{a}{b}>: mycast{a}{b} = [
-    (x: a)-> cast(x, .1(k)(x), .2(k)<x>),
-    <x: a>-> refl(x, a);
-    (f: a => (a & b)) & (<x: a>=> x =[a] .1(f(x)))
+let mycast<a: Type><b: Type>: Type = (f: a => (a & b)) & ({x: a}=> x =[a] .1(f(x))) in
+let mycast_irrel{a: Type}{b: Type}{k: mycast<a><b>}: mycast<a><b> = [
+    (x: a)-> cast(x, .1(k)(x), .2(k){x}),
+    {x: a}-> refl(x, a);
+    mycast<a><b>
 ] in
 
 5
