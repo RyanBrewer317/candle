@@ -220,7 +220,7 @@
 >     Constructor2 _ Refl a ty -> "refl(" ++ pretty a ++ ", " ++ pretty ty ++ ")"
 >     Constructor3 _ Inter a b ty -> "[" ++ pretty a ++ ", " ++ pretty b ++ "; " ++ pretty ty ++ "]"
 >     Constructor3 _ Eq a b ty -> "(" ++ pretty a ++ ") =[" ++ pretty ty ++ "] (" ++ pretty b ++ ")"
->     Constructor3 _ Cast a b eq -> "cast " ++ pretty a ++ " to " ++ pretty b ++ " via " ++ pretty eq
+>     Constructor3 _ Cast a b eq -> "cast(" ++ pretty a ++ ", " ++ pretty b ++ ", " ++ pretty eq ++ ")"
 >     Constructor4 _ InterEq projEq inter1 inter2 interT -> "^(" ++ pretty projEq ++ "; " ++ pretty inter1 ++ ", " ++ pretty inter2 ++ "; " ++ pretty interT ++ ")"
 >     Constructor5 _ J eq a b ty p -> "J(" ++ pretty eq ++ ", " ++ pretty a ++ ", " ++ pretty b ++ ", " ++ pretty ty ++ ", " ++ pretty p ++ ")"
 
@@ -590,6 +590,16 @@
 >   _ <- char ')'
 >   return $ CastSyntax p a b t
 
+> parseExFalso :: Parser Syntax
+> parseExFalso = do
+>   p <- position
+>   _ <- exact "exfalso" -- TODO: ensure no valid identifier characters immediately following
+>   _ <- whitespace0
+>   _ <- char '('
+>   a <- parseTerm
+>   _ <- char ')'
+>   return $ ExFalsoSyntax p a
+
 > parseTermNoPostfix :: Parser Syntax
 > parseTermNoPostfix = do
 >   _ <- whitespace0
@@ -608,6 +618,7 @@
 >     , parseJ
 >     , parseRefl
 >     , parseCast
+>     , parseExFalso
 >     , parseIdent
 >     ]
 >   _ <- whitespace0
@@ -830,6 +841,7 @@
 >       b2 <- tr index renames psi b
 >       ty2 <- tr index renames psi ty
 >       return $ Constructor3 p Cast a2 b2 ty2
+>     ExFalsoSyntax p a -> Constructor1 p ExFalso <$> tr index renames psi a
 >     _ -> undefined
 
 > shift :: Int -> Int -> Term -> Term
@@ -1128,7 +1140,20 @@
 >             return b_t
 >           _ -> Left $ "type error, Cast third argument must be an equation (but it's a `" ++ pretty eq_t ++ "`)"
 >       _ -> Left $ "type error, Cast second argument must be an intersection, but instead has type `" ++ pretty b_t ++ "`"
+>   Constructor0 p Diamond -> return $ Constructor0 p (Sort TypeSort)
+>   Constructor1 p ExFalso a -> do
+>     a_t <- infer Nothing gamma a
+>     if termEq gamma a_t (Constructor3 p Eq (ctt p) (cff p) (cBool p)) then
+>       return $ Binder p (Pi ZeroMode) "t" (Constructor0 p (Sort TypeSort)) (Ident p ZeroMode KindSort 0 "t")
+>     else Left $ "type error, ExFalso argument must be a proof that true equals false, but instead is a `" ++ pretty a_t ++ "`"
 >   _ -> undefined
+
+> cBool :: Pos -> Term
+> cBool p = Binder p (Pi ZeroMode) "t" (Constructor0 p (Sort TypeSort)) (Binder p (Pi ManyMode) "x" (Ident p ZeroMode KindSort 0 "t") (Binder p (Pi ManyMode) "y" (Ident p ZeroMode KindSort 1 "t") (Ident p ZeroMode KindSort 2 "t")))
+> ctt :: Pos -> Term
+> ctt p = Binder p (Lambda ZeroMode) "t" (Constructor0 p (Sort TypeSort)) (Binder p (Lambda ManyMode) "x" (Ident p ZeroMode KindSort 0 "t") (Binder p (Lambda ManyMode) "y" (Ident p ZeroMode KindSort 1 "t") (Ident p ManyMode TypeSort 1 "x")))
+> cff :: Pos -> Term
+> cff p = Binder p (Lambda ZeroMode) "t" (Constructor0 p (Sort TypeSort)) (Binder p (Lambda ManyMode) "x" (Ident p ZeroMode KindSort 0 "t") (Binder p (Lambda ManyMode) "y" (Ident p ZeroMode KindSort 1 "t") (Ident p ManyMode TypeSort 0 "y")))
 
 > captures :: [Int] -> Int -> Term -> Set.Set Int
 > captures caps depth t = case t of
