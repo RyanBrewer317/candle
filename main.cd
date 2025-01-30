@@ -1,20 +1,41 @@
-let t: {t:Type}=>t=>t=>t = {t:Type}->(x:t)->(y:t)->x in 
-let test1: Nat = t{Nat}(2)(3) in
-
 let x: (f: Nat=>Nat) & (f =[Nat=>Nat] (m: Nat)-> m) = [
     (n: Nat)-> n,
     refl(f, Nat=>Nat); 
     (f: Nat=>Nat) & (f =[Nat=>Nat] (m: Nat)-> m)
 ] in 
-let test2: Nat = J(.2(x), .1(x), (r: Nat)-> r; Nat=>Nat, 
+let test: Nat = J(.2(x), .1(x), (r: Nat)-> r; Nat=>Nat, 
     <y: Nat=>Nat>-> <p: .1(x) =[Nat=>Nat] y>-> Nat
 )(4) in
 
-let mycast<a: Type><b: Type>: Type = (f: a => (a & b)) & ({x: a}=> x =[a] .1(f(x))) in
-let mycast_irrel{a: Type}{b: Type}{k: mycast<a><b>}: mycast<a><b> = [
-    (x: a)-> cast(x, .1(k)(x), .2(k){x}),
-    {x: a}-> refl(x, a);
-    mycast<a><b>
+let Cast<A: Type><B: Type>: Type = (f: A => (A & B)) & ({x: A}=> x =[A] .1(f(x))) in
+let CastIrrel{A: Type}{B: Type}{k: Cast<A><B>}: Cast<A><B> = [
+    (x: A)-> cast(x, .1(k)(x), .2(k){x}),
+    {x: A}-> refl(x, A);
+    Cast<A><B>
 ] in
+
+let N: Type = {X: Type}=> X => (X => X) => X in
+let zero: N = {X: Type}-> (base: X)-> (step: X => X)-> base in
+let succ: N=>N = (n: N)-> {X: Type}-> (base: X)-> (step: X=>X)-> step(n{X}(base)(step)) in
+
+let one: N = succ(zero) in
+let two: N = succ(one) in
+let three: N = succ(two) in
+
+let add(m: N)(n: N): N = n{N}(m)(succ) in
+
+let lemma: add(one)(one) =[N] two 
+  = refl(two, N) in
+
+
+let iNat<n: N>: Type = {P: <N>=>Type}=> (P<zero>) => ((m: N)=> P<m> => P<succ(m)>) => P<n> in
+
+let izero0{P: <N>=>Type}(base: P<zero>)(step: (m: N)=> P<m> => P<succ(m)>): P<zero> = base in
+
+let izero: iNat<zero> = izero0 in
+
+let ione0{P: <N>=>Type}(base: P<zero>)(step: (m: N)=> P<m> => P<succ(m)>): P<one> = step(zero)(base) in
+
+let ione: iNat<one> = ione0 in
 
 5
