@@ -14,32 +14,32 @@ let CastIrrel{A: Type}{B: Type}{k: Cast<A><B>}: Cast<A><B> = [
   Cast<A><B>
 ] in
 
-let N: Type = {X: Type}=> X => (X => X) => X in
+let cNat: Type = {X: Type}=> X => (X => X) => X in
 let zero{X: Type}(base: X)(step: X => X): X = base in
-let succ(n: N){X: Type}(base: X)(step: X=>X): X =
+let succ(n: cNat){X: Type}(base: X)(step: X=>X): X =
   step(n{X}(base)(step)) 
 in
 
-let one: N = succ(zero) in
-let two: N = succ(one) in
-let three: N = succ(two) in
+let one: cNat = succ(zero) in
+let two: cNat = succ(one) in
+let three: cNat = succ(two) in
 
-let add(m: N)(n: N): N = n{N}(m)(succ) in
+let add(m: cNat)(n: cNat): cNat = n{cNat}(m)(succ) in
 
-let lemma: add(one)(one) =[N] two = 
-  refl(two, N) 
+let lemma: add(one)(one) =[cNat] two = 
+  refl(two, cNat) 
 in
 
 
-let iNat<n: N>: Type = 
-  {P: <N>=>Type}=> (P<zero>) => ((m: N)=> P<m> => P<succ(m)>) => P<n> 
+let iNat<n: cNat>: Type = 
+  {P: <cNat>=>Type}=> (P<zero>) => ((m: cNat)=> P<m> => P<succ(m)>) => P<n> 
 in
 
-let izero{P: <N>=>Type}(base: P<zero>)(step: (m: N)=> P<m> => P<succ(m)>): P<zero> = 
+let izero{P: <cNat>=>Type}(base: P<zero>)(step: (m: cNat)=> P<m> => P<succ(m)>): P<zero> = 
   base 
 in
 
-let ione{P: <N>=>Type}(base: P<zero>)(step: (m: N)=> P<m> => P<succ(m)>): P<one> = 
+let ione{P: <cNat>=>Type}(base: P<zero>)(step: (m: cNat)=> P<m> => P<succ(m)>): P<one> = 
   step(zero)(base) 
 in
 

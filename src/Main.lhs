@@ -190,7 +190,7 @@
 
 > instance Pretty Term where
 >   pretty t = case t of
->     Ident _ _ _ i x -> x ++ show i
+>     Ident _ _ _ _ x -> x
 >     Binder _ (Lambda ManyMode) x ty e -> "(" ++ x ++ ": " ++ pretty ty ++ ")-> " ++ pretty e
 >     Binder _ (Lambda ZeroMode) x ty e -> "{" ++ x ++ ": " ++ pretty ty ++ "}-> " ++ pretty e
 >     Binder _ (Lambda TypeMode) x ty e -> "<" ++ x ++ ": " ++ pretty ty ++ ">-> " ++ pretty e
