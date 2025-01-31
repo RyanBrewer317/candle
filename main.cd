@@ -43,4 +43,11 @@ let ione{P: <cNat>=>Type}(base: P<zero>)(step: (m: cNat)=> P<m> => P<succ(m)>): 
   step(zero)(base) 
 in
 
+let Bool: Type = {X: Type}=> X => X => X in
+let true: Bool = {X: Type}-> (x: X)-> (y: X)-> x in
+let false: Bool = {X: Type}-> (x: X)-> (y: X)-> y in
+
+let BoolAndNat: Type = Bool & cNat in
+let true_zero: BoolAndNat = [true, zero; BoolAndNat] in
+
 5

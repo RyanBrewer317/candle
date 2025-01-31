@@ -16,6 +16,7 @@
 > import System.Process (system)
 > import Control.Monad (when)
 > import System.Environment (getArgs)
+> import Debug.Trace (trace)
 
 > main :: IO ()
 > main = do
@@ -1013,10 +1014,9 @@
 >      else Left $ "type mismatch, expected two types for the intersection type, got `" ++ pretty ak ++ "` and `" ++ pretty bk ++ "`"
 >   Constructor3 p Inter l r t -> do
 >     l_t <- infer Nothing gamma l
->     let l2 = inc l
 >     r_t <- infer Nothing gamma $ dec $ subst r 0 $ inc l
 >     _ <- infer Nothing gamma t
->     if termEq gamma l2 r then do
+>     if termEq gamma l (dec r) then do
 >       let pse = normalize (normalizeContext gamma) t -- TODO: find the better, more general spot to do this evaluation
 >       case pse of
 >         Binder _ InterT x l_t_2 r_t_2 ->
