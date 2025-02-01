@@ -42,7 +42,8 @@
 >                     h_out <- openFile "bin.fvm" WriteMode
 >                     B.hPut h_out $ B.pack bytecode
 >                     hClose h_out
->                     _ <- system "vendor/fvm bin.fvm"
+>                     -- _ <- system "vendor/fvm bin.fvm"
+>                     putStrLn $ pretty $ normalize [] t2
 >                     return ()
 >           Right (_, p, c:_) ->
 >             putStrLn $
