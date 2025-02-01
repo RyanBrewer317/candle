@@ -76,6 +76,9 @@
 
 > data Pos = Pos String Int Int deriving Show
 
+> instance Pretty Pos where
+>   pretty (Pos _ l c) = show l ++ ":" ++ show c
+
 > class Pretty a where
 >   pretty :: a -> String
 
@@ -864,7 +867,7 @@
 >   (Constructor5 _ J eq1 a1 b1 t1 p1, Constructor5 _ J eq2 a2 b2 t2 p2) -> alphaEq eq1 eq2 && alphaEq a1 a2 && alphaEq b1 b2 && alphaEq t1 t2 && alphaEq p1 p2
 >   _ -> False
 
-> termEq :: [(BinderMode, Term, Maybe Term)] -> Term -> Term -> Bool
+> termEq :: [(Pos, BinderMode, Term, Maybe Term)] -> Term -> Term -> Bool
 > termEq gamma a b = alphaEq (erase $ normalize (normalizeContext gamma) a) (erase $ normalize (normalizeContext gamma) b)
 
 > erase :: Term -> Term
@@ -887,21 +890,21 @@
 >   Constructor3 _ Cast a _ _ -> erase a
 >   Constructor5 _ J e _ _ _ _ -> erase e
 
-> normalizeContext :: [(BinderMode, Term, Maybe Term)] -> [(BinderMode, Term, Maybe Term)]
+> normalizeContext :: [(Pos, BinderMode, Term, Maybe Term)] -> [(Pos, BinderMode, Term, Maybe Term)]
 > normalizeContext gamma = case gamma of
 >   [] -> []
->   (a, b, Nothing):rest -> (a, b, Nothing):normalizeContext rest
->   (a, b, Just v):rest -> let g = normalizeContext rest in (a, b, Just (normalize g v)) : g
+>   (s, a, b, Nothing):rest -> (s, a, b, Nothing):normalizeContext rest
+>   (s, a, b, Just v):rest -> let g = normalizeContext rest in (s, a, b, Just (normalize g v)) : g
 
 > idx :: [a] -> Int -> Maybe a
 > idx xs i = case xs of
 >   [] -> Nothing
 >   (x:rest) -> if i == 0 then Just x else idx rest (i - 1)
 
-> normalize :: [(BinderMode, Term, Maybe Term)] -> Term -> Term
+> normalize :: [(Pos, BinderMode, Term, Maybe Term)] -> Term -> Term
 > normalize gamma term = case term of
 >   Ident _ _ _ i _ -> case gamma `idx` i of
->     Just (_, _, Just v) -> shift 0 i v
+>     Just (_, _, _, Just v) -> shift 0 i v
 >     _ -> term
 >   Constructor2 p (App m) foo bar -> 
 >     let foo2 = normalize gamma foo in
@@ -918,9 +921,14 @@
 >   Constructor1 p Snd e ->
 >     let e2 = normalize gamma e in
 >     case e2 of
->       Constructor3 _ Inter _ r _ -> r
+>       Constructor3 _ Inter l r _ -> normalize gamma $ dec $ subst r 0 (inc l)
 >       _ -> Constructor1 p Snd e2
->   Binder p k x t b -> Binder p k x (normalize gamma t) (normalize ((ManyMode, t, Nothing):gamma) b) -- first two components of the triple don't matter
+>   Binder p k x t b -> Binder p k x (normalize gamma t) (normalize ((p, ManyMode, t, Nothing):gamma) b) -- first two components of the triple don't matter
+>   Constructor3 p Inter l r t ->
+>     let l2 = normalize gamma l in
+>     let r2 = normalize gamma $ dec $ subst r 0 (inc l2) in
+>     let t2 = normalize gamma t in
+>     Constructor3 p Inter l2 r2 t2
 >   Constructor0 p k -> Constructor0 p k
 >   Constructor1 p k a -> Constructor1 p k $ normalize gamma a
 >   Constructor2 p k a b ->
@@ -965,26 +973,26 @@
 > funcTypeCodomain TypeMode = KindSort
 > funcTypeCodomain ZeroMode = TypeSort
 
-> infer :: Maybe Term -> [(BinderMode, Term, Maybe Term)] -> Term -> Either String Term
+> infer :: Maybe Term -> [(Pos, BinderMode, Term, Maybe Term)] -> Term -> Either String Term
 > infer arg gamma term = case term of
 >   Constructor0 p (Sort TypeSort) -> return $ Constructor0 p (Sort KindSort)
 >   Constructor0 _ (Sort KindSort) -> undefined
 >   Ident _ _ _ i x -> do
 >     case gamma `idx` i of
->       Just (_, t, _) -> return $ shift 0 i t
+>       Just (_, _, t, _) -> return $ shift 0 i t
 >       _ -> Left $ "unknown identifier `" ++ x ++ "` (" ++ show i ++ ")"
->   Binder p (Pi mode) _ xt body -> do
+>   Binder p (Pi mode) _x xt body -> do
 >     ak <- infer Nothing gamma xt
->     let b_gamma = (mode, inc xt, Nothing): gamma
+>     let b_gamma = (p, mode, inc xt, Nothing): gamma
 >     bt <- infer Nothing b_gamma body
 >     if termEq b_gamma bt (Constructor0 p $ Sort $ funcTypeCodomain mode) then
 >       case ak of
 >         Constructor0 _ (Sort KindSort) | mode == ManyMode ->
 >           Left "type error, many-mode functions can't return erased things"
 >         _ -> return bt
->     else Left $ show p ++ " type mismatch, due to " ++ show mode ++ ", expected a codomain of kind " ++ pretty (Constructor0 p $ Sort $ funcTypeCodomain mode) ++ ", got " ++ pretty bt
+>     else Left $ trace (show $ map (\(pos,_,_,_)->pretty pos) b_gamma) $ show p ++ " type mismatch, due to " ++ show mode ++ ", expected a codomain of kind " ++ pretty (Constructor0 p $ Sort $ funcTypeCodomain mode) ++ ", got `" ++ pretty body ++ ": " ++ pretty bt ++ "`"
 >   Binder p (Lambda mode) x xt body -> do -- TODO: check that zero-mode lambdas don't mention their parameters in unerased expressions
->     let gamma2 = (mode, inc xt, arg):gamma
+>     let gamma2 = (p, mode, inc xt, arg):gamma
 >     body_t <- infer Nothing gamma2 body
 >     let ty = Binder p (Pi mode) x xt body_t
 >     k <- infer Nothing gamma ty
@@ -1001,13 +1009,13 @@
 >           if termEq gamma xt bar_t then
 >               return $ dec $ subst body_t 0 $ inc bar
 >           else Left $ "type mismatch, expected a `" ++ pretty xt ++ "`, got `" ++ pretty bar ++ ": " ++ pretty bar_t ++ "` at " ++ show p
->         else Left $ "mode mismatch, expected " ++ show mode2 ++ ", got " ++ show mode
+>         else Left $ "mode mismatch, expected " ++ show mode2 ++ ", got " ++ show mode ++ " at " ++ show p
 >       _ -> Left $ show p ++ " expected function, got " ++ pretty foo_t
 >   Constructor0 p NatT -> return $ Constructor0 p (Sort TypeSort)
 >   Constructor0 p (Nat _) -> return $ Constructor0 p NatT
 >   Binder p InterT _x a b -> do
 >     ak <- infer Nothing gamma a
->     let b_gamma = (ZeroMode, inc a, Nothing):gamma
+>     let b_gamma = (p, ZeroMode, inc a, Nothing):gamma
 >     bk <- infer Nothing b_gamma b
 >     if termEq gamma ak (Constructor0 p $ Sort TypeSort) && termEq b_gamma bk (Constructor0 p $ Sort TypeSort) then do
 >       return $ Constructor0 p (Sort TypeSort)
