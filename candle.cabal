@@ -62,16 +62,16 @@ executable candle
     import:           warnings
 
     -- .hs or .lhs file containing the Main module.
-    main-is:          Main.lhs
+    main-is:          Main.hs
 
     -- Modules included in this executable, other than Main.
-    -- other-modules:
+    other-modules:    Header, Parser, Translate, Typecheck
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
 
     -- Other library packages from which modules are imported.
-    build-depends:    base ^>=4.17.2.1, containers ^>= 0.6.7, bytestring ^>= 0.11.5.3, process ^>= 1.6.18.0
+    build-depends:    base ^>=4.21.0.0, containers ^>= 0.6.7, bytestring ^>= 0.11.5.3, process ^>= 1.6.18.0
 
     -- Directories containing source files.
     hs-source-dirs:   src
