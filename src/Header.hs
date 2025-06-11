@@ -1,21 +1,12 @@
 {-# LANGUAGE GADTs #-}
 module Header where
 
-import qualified Data.Map as Map
 import Data.List (intercalate)
-import Data.Either (partitionEithers)
-import Data.Char (isAlpha, isDigit)
-import Data.Functor (($>))
-import GHC.IO.Handle (hFlush)
-import System.IO (stdout)
-import Data.Maybe (fromMaybe)
-import Control.Monad (when)
-import System.Environment (getArgs)
 
 class Pretty a where
   pretty :: a -> String
 
-data Pos = Pos String Int Int deriving Show
+data Pos = Pos String Int Int deriving (Eq, Show)
 
 instance Pretty Pos where
   pretty (Pos _ l c) = show l ++ ":" ++ show c
@@ -97,38 +88,27 @@ instance Pretty Syntax where
     CastSyntax _ a b eq -> "cast(" ++ pretty a ++ ", " ++ pretty b ++ ", " ++ pretty eq ++ ", " ++ ")"
     ExFalsoSyntax _ a -> "exfalso(" ++ pretty a ++ ")"
 
-data Binder where
-  Lambda :: BinderMode -> Binder
-  Pi :: BinderMode -> Binder
-  InterT :: Binder
+data Binder = Lambda BinderMode | Pi BinderMode | InterT
+  deriving Eq
 
-data Constructor0 where
-  Diamond :: Constructor0
-  Sort :: Sort -> Constructor0
-  NatT :: Constructor0
-  Nat :: Int -> Constructor0
-data Constructor1 where
-  Fst :: Constructor1
-  Snd :: Constructor1
-  ExFalso :: Constructor1
-data Constructor2 where
-  App :: BinderMode -> Constructor2
-  Refl :: Constructor2
-data Constructor3 where
-  Inter :: Constructor3
-  Eq :: Constructor3
-  Cast :: Constructor3
-data Constructor5 where
-  J :: Constructor5
+data Constructor0 = Diamond 
+                  | Sort Sort
+                  | NatT
+                  | Nat Int
+                  deriving Eq
+data Constructor1 = Fst | Snd | ExFalso deriving Eq
+data Constructor2 = App BinderMode | Refl deriving Eq
+data Constructor3 = Inter | Eq | Cast deriving Eq
+data Constructor5 = J deriving Eq
 
-data Term where
-  Ident :: Pos -> BinderMode -> Sort -> Int -> String -> Term
-  Binder :: Pos -> Binder -> String -> Term -> Term -> Term
-  Constructor0 :: Pos -> Constructor0 -> Term
-  Constructor1 :: Pos -> Constructor1 -> Term -> Term
-  Constructor2 :: Pos -> Constructor2 -> Term -> Term -> Term
-  Constructor3 :: Pos -> Constructor3 -> Term -> Term -> Term -> Term
-  Constructor5 :: Pos -> Constructor5 -> Term -> Term -> Term -> Term -> Term -> Term
+data Term = Ident Pos BinderMode Sort Int String 
+          | Binder Pos Binder String Term Term 
+          | Constructor0 Pos Constructor0 
+          | Constructor1 Pos Constructor1 Term 
+          | Constructor2 Pos Constructor2 Term Term 
+          | Constructor3 Pos Constructor3 Term Term Term 
+          | Constructor5 Pos Constructor5 Term Term Term Term Term
+          deriving Eq
 
 instance Pretty Term where
   pretty t = case t of
