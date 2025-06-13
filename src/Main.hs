@@ -8,7 +8,7 @@ import System.IO (stdout)
 import Control.Monad (when)
 import System.Environment (getArgs)
 import Header (pretty, Sort(..), Pos(..))
-import Typecheck (infer)
+import Typecheck (infer, normalize)
 import Translate (translate)
 import Parser (parseTerm, run, prettyParseError)
 
@@ -29,7 +29,7 @@ main = do
             case res of
               Left err -> putStrLn err
               Right t2 -> do
-                case infer Nothing [] t2 of
+                case infer [] [] t2 of
                   Left err -> putStrLn err
                   Right t3 -> do
                     -- let bytecode = codegen [] [] t2 ++ [29, 0]
@@ -37,7 +37,7 @@ main = do
                     -- B.hPut h_out $ B.pack bytecode
                     -- hClose h_out
                     -- _ <- system "vendor/fvm bin.fvm"
-                    -- putStrLn $ pretty $ normalize [] t2
+                    putStrLn $ pretty $ normalize [] t2
                     putStrLn $ pretty t3
                     return ()
           Right (_, p, c:_) ->
@@ -55,7 +55,7 @@ main = do
             Left err ->
               putStrLn err
             Right t2 -> do
-              case infer Nothing [] t2 of
+              case infer [] [] t2 of
                 Left err -> putStrLn err
                 Right t3 -> do
                   -- let bytecode = codegen [] [] t2 ++ [29, 0]
